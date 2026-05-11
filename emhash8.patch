@@ -1,6 +1,14 @@
 --- emhash8_orig/hash_table8.hpp	2026-05-11 11:33:02.274487478 +0200
-+++ emhash8/hash_table8.hpp	2026-05-11 12:01:12.720124850 +0200
-@@ -588,6 +588,29 @@
++++ emhash8/hash_table8.hpp	2026-05-11 12:46:11.744920156 +0200
+@@ -61,6 +61,7 @@
+ 
+ #define EMH_EMPTY(n) (0 > (int)(_index[n].next))
+ #define EMH_EQHASH(n, key_hash) (((size_type)(key_hash) & ~_mask) == (_index[n].slot & ~_mask))
++#define EMH_EQFP(n, fp) ((fp) == (_index[n].slot & ~_mask))
+ //#define EMH_EQHASH(n, key_hash) ((size_type)(key_hash - _index[n].slot) & ~_mask) == 0
+ #define EMH_NEW(key, val, bucket, key_hash) \
+     new(_pairs + _num_filled) value_type(key, val); \
+@@ -588,6 +589,29 @@
          return {this, find_filled_slot(key)};
      }
  
@@ -30,3 +38,36 @@
      template<typename K=KeyT>
      const_iterator find(const K& key) const noexcept
      {
+@@ -1416,13 +1440,20 @@
+     {
+         const auto key_hash = hash_key(key);
+         const auto bucket = size_type(key_hash & _mask);
++#ifdef EMH_HOIST_FP
++        const auto fp = (size_type)key_hash & ~_mask;
++#endif
+         auto next_bucket = _index[bucket].next;
+         if ((int)next_bucket < 0)
+             return _num_filled;
+ 
+         const auto slot = _index[bucket].slot & _mask;
+         //prefetch_heap_block((char*)&_pairs[slot]);
++#ifdef EMH_HOIST_FP
++        if (EMH_EQFP(bucket, fp)) {
++#else
+         if (EMH_EQHASH(bucket, key_hash)) {
++#endif
+             if (EMH_LIKELY(_eq(key, _pairs[slot].first)))
+                 return slot;
+         }
+@@ -1430,7 +1461,11 @@
+             return _num_filled;
+ 
+         while (true) {
++#ifdef EMH_HOIST_FP
++            if (EMH_EQFP(next_bucket, fp)) {
++#else
+             if (EMH_EQHASH(next_bucket, key_hash)) {
++#endif
+                 const auto eslot = _index[next_bucket].slot & _mask;
+                 if (EMH_LIKELY(_eq(key, _pairs[eslot].first)))
+                     return eslot;

@@ -61,6 +61,7 @@
 
 #define EMH_EMPTY(n) (0 > (int)(_index[n].next))
 #define EMH_EQHASH(n, key_hash) (((size_type)(key_hash) & ~_mask) == (_index[n].slot & ~_mask))
+#define EMH_EQFP(n, fp) ((fp) == (_index[n].slot & ~_mask))
 //#define EMH_EQHASH(n, key_hash) ((size_type)(key_hash - _index[n].slot) & ~_mask) == 0
 #define EMH_NEW(key, val, bucket, key_hash) \
     new(_pairs + _num_filled) value_type(key, val); \
@@ -1439,13 +1440,20 @@ private:
     {
         const auto key_hash = hash_key(key);
         const auto bucket = size_type(key_hash & _mask);
+#ifdef EMH_HOIST_FP
+        const auto fp = (size_type)key_hash & ~_mask;
+#endif
         auto next_bucket = _index[bucket].next;
         if ((int)next_bucket < 0)
             return _num_filled;
 
         const auto slot = _index[bucket].slot & _mask;
         //prefetch_heap_block((char*)&_pairs[slot]);
+#ifdef EMH_HOIST_FP
+        if (EMH_EQFP(bucket, fp)) {
+#else
         if (EMH_EQHASH(bucket, key_hash)) {
+#endif
             if (EMH_LIKELY(_eq(key, _pairs[slot].first)))
                 return slot;
         }
@@ -1453,7 +1461,11 @@ private:
             return _num_filled;
 
         while (true) {
+#ifdef EMH_HOIST_FP
+            if (EMH_EQFP(next_bucket, fp)) {
+#else
             if (EMH_EQHASH(next_bucket, key_hash)) {
+#endif
                 const auto eslot = _index[next_bucket].slot & _mask;
                 if (EMH_LIKELY(_eq(key, _pairs[eslot].first)))
                     return eslot;
