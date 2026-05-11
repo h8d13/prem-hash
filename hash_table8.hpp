@@ -63,9 +63,15 @@
 #define EMH_EQHASH(n, key_hash) (((size_type)(key_hash) & ~_mask) == (_index[n].slot & ~_mask))
 #define EMH_EQFP(n, fp) ((fp) == (_index[n].slot & ~_mask))
 //#define EMH_EQHASH(n, key_hash) ((size_type)(key_hash - _index[n].slot) & ~_mask) == 0
+#ifdef EMH_FAST_ERASE
+#define EMH_REV_SET(slot, b) (_rev_bucket[slot] = (b))
+#else
+#define EMH_REV_SET(slot, b) ((void)0)
+#endif
 #define EMH_NEW(key, val, bucket, key_hash) \
     new(_pairs + _num_filled) value_type(key, val); \
     _etail = bucket; \
+    EMH_REV_SET(_num_filled, bucket); \
     _index[bucket] = {bucket, _num_filled++ | ((size_type)(key_hash) & ~_mask)}
 
 namespace emhash8 {
@@ -202,6 +208,9 @@ public:
     {
         _pairs = nullptr;
         _index = nullptr;
+#ifdef EMH_FAST_ERASE
+        _rev_bucket = nullptr;
+#endif
         _mask  = _num_buckets = 0;
         _num_filled = 0;
         _pairs_capacity = 0;
@@ -219,10 +228,16 @@ public:
         : _pair_allocator(PairAllocTraits::select_on_container_copy_construction(rhs._pair_allocator))
         , _index_allocator(IndexAllocTraits::select_on_container_copy_construction(rhs._index_allocator))
     {
+#ifdef EMH_FAST_ERASE
+        _rev_bucket = nullptr;
+#endif
         if (rhs.load_factor() > EMH_MIN_LOAD_FACTOR) {
             _pairs_capacity = (size_type)((float)rhs._num_buckets * rhs.max_load_factor()) + 4;
             _pairs = alloc_bucket(_pairs_capacity);
             _index = alloc_index(rhs._num_buckets);
+#ifdef EMH_FAST_ERASE
+            _rev_bucket = alloc_rev(_pairs_capacity);
+#endif
             clone(rhs);
         } else {
             init(rhs._num_filled + 2, rhs.max_load_factor());
@@ -271,11 +286,20 @@ public:
     HashMap(const HashMap& rhs, const allocator_type& alloc)
         : _pair_allocator(alloc)
         , _index_allocator(alloc)
+#ifdef EMH_FAST_ERASE
+        , _rev_allocator(alloc)
+#endif
     {
+#ifdef EMH_FAST_ERASE
+        _rev_bucket = nullptr;
+#endif
         if (rhs.load_factor() > EMH_MIN_LOAD_FACTOR) {
             _pairs_capacity = (size_type)((float)rhs._num_buckets * rhs.max_load_factor()) + 4;
             _pairs = alloc_bucket(_pairs_capacity);
             _index = alloc_index(rhs._num_buckets);
+#ifdef EMH_FAST_ERASE
+            _rev_bucket = alloc_rev(_pairs_capacity);
+#endif
             clone(rhs);
         } else {
             init(rhs._num_filled + 2, rhs.max_load_factor());
@@ -304,6 +328,9 @@ public:
 
         if (rhs.load_factor() < EMH_MIN_LOAD_FACTOR) {
             clear(); dealloc_bucket(_pairs, _pairs_capacity); _pairs = nullptr; _pairs_capacity = 0;
+#ifdef EMH_FAST_ERASE
+            dealloc_rev(_rev_bucket, _pairs_capacity); _rev_bucket = nullptr;
+#endif
             rehash(rhs._num_filled + 2);
             for (auto it = rhs.begin(); it != rhs.end(); ++it)
                 insert_unique(it->first, it->second);
@@ -314,9 +341,15 @@ public:
 
         if (_num_buckets != rhs._num_buckets) {
             dealloc_bucket(_pairs, _pairs_capacity); dealloc_index(_index, _num_buckets);
+#ifdef EMH_FAST_ERASE
+            dealloc_rev(_rev_bucket, _pairs_capacity);
+#endif
             _index = alloc_index(rhs._num_buckets);
             _pairs_capacity = (size_type)((float)rhs._num_buckets * rhs.max_load_factor()) + 4;
             _pairs = alloc_bucket(_pairs_capacity);
+#ifdef EMH_FAST_ERASE
+            _rev_bucket = alloc_rev(_pairs_capacity);
+#endif
         }
 
         clone(rhs);
@@ -354,6 +387,10 @@ public:
         clearkv();
         dealloc_bucket(_pairs, _pairs_capacity);
         dealloc_index(_index, _num_buckets);
+#ifdef EMH_FAST_ERASE
+        dealloc_rev(_rev_bucket, _pairs_capacity);
+        _rev_bucket = nullptr;
+#endif
         _num_filled = 0;
         _index = nullptr;
         _pairs = nullptr;
@@ -376,6 +413,10 @@ public:
 
         auto opairs  = rhs._pairs;
         memcpy((char*)_index, (char*)rhs._index, (_num_buckets + EAD) * sizeof(Index));
+#ifdef EMH_FAST_ERASE
+        if (_rev_bucket && rhs._rev_bucket)
+            memcpy((char*)_rev_bucket, (char*)rhs._rev_bucket, _num_filled * sizeof(size_type));
+#endif
 
         if (is_trivially_copyable()) {
             memcpy((char*)_pairs, (char*)opairs, _num_filled * sizeof(value_type));
@@ -403,6 +444,10 @@ public:
         std::swap(_etail, rhs._etail);
         std::swap(_pair_allocator, rhs._pair_allocator);
         std::swap(_index_allocator, rhs._index_allocator);
+#ifdef EMH_FAST_ERASE
+        std::swap(_rev_bucket, rhs._rev_bucket);
+        std::swap(_rev_allocator, rhs._rev_allocator);
+#endif
     }
 
     // -------------------------------------------------------------
@@ -1151,6 +1196,18 @@ public:
         return PairAllocTraits::allocate(_pair_allocator, num_buckets);
     }
 
+#ifdef EMH_FAST_ERASE
+    size_type* alloc_rev(size_type cap)
+    {
+        return cap ? RevAllocTraits::allocate(_rev_allocator, cap) : nullptr;
+    }
+
+    void dealloc_rev(size_type* ptr, size_type cap)
+    {
+        if (ptr) RevAllocTraits::deallocate(_rev_allocator, ptr, cap);
+    }
+#endif
+
     void dealloc_bucket(value_type* ptr, size_type num_buckets)
     {
         if (ptr)
@@ -1218,6 +1275,11 @@ public:
             }
         }
         dealloc_bucket(_pairs, _pairs_capacity);
+#ifdef EMH_FAST_ERASE
+        auto new_rev = alloc_rev(need_size);
+        dealloc_rev(_rev_bucket, _pairs_capacity);
+        _rev_bucket = new_rev;
+#endif
         _pairs = new_pairs;
         _pairs_capacity = need_size;
         _index = alloc_index(num_buckets);
@@ -1279,6 +1341,9 @@ public:
             const auto key_hash = hash_key(key);
             const auto bucket = find_unique_bucket(key_hash);
             _index[bucket] = { bucket, slot | ((size_type)(key_hash) & ~_mask) };
+#ifdef EMH_FAST_ERASE
+            _rev_bucket[slot] = bucket;
+#endif
 
 #if EMH_REHASH_LOG
             if (bucket != hash_main(bucket))
@@ -1328,25 +1393,31 @@ private:
         return find_slot_bucket(slot, main_bucket); //TODO
     }
 
-    //very slow
     void erase_slot(const size_type sbucket, const size_type main_bucket) noexcept
     {
         const auto slot = _index[sbucket].slot & _mask;
         const auto ebucket = erase_bucket(sbucket, main_bucket);
         const auto last_slot = --_num_filled;
         if (EMH_LIKELY(slot != last_slot)) {
+#ifdef EMH_FAST_ERASE
+            const auto last_bucket = _rev_bucket[last_slot];
+#else
             const auto last_bucket = (_etail == INACTIVE || ebucket == _etail)
                 ? slot_to_bucket(last_slot) : _etail;
+#endif
 #if 1
             _pairs[slot] = std::move(_pairs[last_slot]);
 #else
-            auto& target = _pairs[slot]; 
+            auto& target = _pairs[slot];
             if (!is_trivially_destructible())
-                target.~value_type();           
+                target.~value_type();
             new (&target) value_type(std::move(_pairs[last_slot]));
 #endif
 
             _index[last_bucket].slot = slot | (_index[last_bucket].slot & ~_mask);
+#ifdef EMH_FAST_ERASE
+            _rev_bucket[slot] = last_bucket;
+#endif
         }
 
         if (!is_trivially_destructible())
@@ -1566,6 +1637,9 @@ private:
 
         _index[prev_bucket].next = new_bucket;
         _index[bucket].next = INACTIVE;
+#ifdef EMH_FAST_ERASE
+        _rev_bucket[_index[new_bucket].slot & _mask] = new_bucket;
+#endif
 
         return bucket;
     }
@@ -1909,9 +1983,16 @@ private:
     using PairAllocTraits = std::allocator_traits<PairAlloc>;
     using IndexAlloc = typename std::allocator_traits<AllocT>::template rebind_alloc<Index>;
     using IndexAllocTraits = std::allocator_traits<IndexAlloc>;
+#ifdef EMH_FAST_ERASE
+    using RevAlloc = typename std::allocator_traits<AllocT>::template rebind_alloc<size_type>;
+    using RevAllocTraits = std::allocator_traits<RevAlloc>;
+#endif
 
     Index*    _index;
     value_type*_pairs;
+#ifdef EMH_FAST_ERASE
+    size_type* _rev_bucket;     //slot -> bucket; replaces O(chain) slot_to_bucket in erase
+#endif
 
     HashT     _hasher;
     EqT       _eq;
@@ -1927,6 +2008,9 @@ private:
     size_type _pairs_capacity;
     PairAlloc _pair_allocator;
     IndexAlloc _index_allocator;
+#ifdef EMH_FAST_ERASE
+    RevAlloc  _rev_allocator;
+#endif
 };
 } // namespace emhash
 
