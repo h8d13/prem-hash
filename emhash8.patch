@@ -1,0 +1,32 @@
+--- emhash8_orig/hash_table8.hpp	2026-05-11 11:33:02.274487478 +0200
++++ emhash8/hash_table8.hpp	2026-05-11 12:01:12.720124850 +0200
+@@ -588,6 +588,29 @@
+         return {this, find_filled_slot(key)};
+     }
+ 
++    //prefetch _index bucket; call ahead of find() in batched lookups to hide DRAM latency
++    template<typename K=KeyT>
++    void prefetch(const K& key) const noexcept
++    {
++        const auto bucket = size_type(hash_key(key) & _mask);
++#if defined(__GNUC__) || defined(__clang__)
++        __builtin_prefetch(&_index[bucket]);
++#elif defined(_M_IX86) || defined(_M_X64)
++        _mm_prefetch((const char*)&_index[bucket], _MM_HINT_T0);
++#endif
++    }
++
++    //batched find with software-pipelined prefetch; out[i]=nullptr if missing. Stride 40 near-peak on x86 for >1M entries
++    template<size_t Stride = 40, typename K = KeyT>
++    void find_batch(const K* keys, size_t n, const value_type** out) const noexcept
++    {
++        for (size_t i = 0; i < n; ++i) {
++            if (i + Stride < n) prefetch(keys[i + Stride]);
++            const auto slot = find_filled_slot(keys[i]);
++            out[i] = (slot != _num_filled) ? &_pairs[slot] : nullptr;
++        }
++    }
++
+     template<typename K=KeyT>
+     const_iterator find(const K& key) const noexcept
+     {
