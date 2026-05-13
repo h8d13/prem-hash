@@ -1031,16 +1031,38 @@ static inline void EMH__FN(_prefetch)(const EMH__T* m, EMH_KEY key)
 
 /* out[i] = pointer to pair or NULL if absent. Stride 40 near-peak on x86.
  * `EMH_KEY const*` (not `const EMH_KEY*`) so const binds to the element
- * even when EMH_KEY is a pointer type like `char*`.                      */
+ * even when EMH_KEY is a pointer type like `char*`.
+ * Hash ring: compute each key's hash once, use for both prefetch and lookup.
+ * Without the ring, _prefetch() and __find_filled_slot() each hash keys[i],
+ * doubling the hash work per key.                                          */
 static inline void EMH__FN(_find_batch)(const EMH__T* m, EMH_KEY const* keys, size_t n,
                                         const EMH__TP** out)
 {
     enum { STRIDE = 40 };
+    uint64_t hring[STRIDE];
+    size_t wi = 0;
+
+    const size_t pre = n < (size_t)STRIDE ? n : (size_t)STRIDE;
+    for (size_t j = 0; j < pre; ++j) {
+        hring[j] = EMH__FN(__hash_key)(keys[j]);
+        const EMH__SZ b = (EMH__SZ)hring[j] & m->_mask;
+        EMH_PREFETCH(&m->_ctrl[b]);
+        EMH_PREFETCH(&m->_index[b]);
+    }
+
     for (size_t i = 0; i < n; ++i) {
-        if (i + STRIDE < n)
-            EMH__FN(_prefetch)(m, keys[i + STRIDE]);
-        const EMH__SZ slot = EMH__FN(__find_filled_slot)(m, keys[i]);
-        out[i] = (slot != m->_num_filled) ? &m->_pairs[slot] : NULL;
+        const uint64_t h     = hring[wi];
+        const EMH__SZ bucket = EMH__FN(__find_filled_bucket)(m, keys[i], h);
+        out[i] = (bucket != EMH__INACTIVE)
+            ? &m->_pairs[m->_index[bucket].slot & m->_mask]
+            : NULL;
+        if (i + STRIDE < n) {
+            hring[wi] = EMH__FN(__hash_key)(keys[i + STRIDE]);
+            const EMH__SZ b = (EMH__SZ)hring[wi] & m->_mask;
+            EMH_PREFETCH(&m->_ctrl[b]);
+            EMH_PREFETCH(&m->_index[b]);
+        }
+        if (++wi == (size_t)STRIDE) wi = 0;
     }
 }
 
