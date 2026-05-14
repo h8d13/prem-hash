@@ -2,7 +2,6 @@
  * lazy-ctrl model (ctrl[bucket] stays FULL after erase; idx.next=INACTIVE
  * is the truth). Brute-finds a collision pair, erases the chain head, and
  * verifies the chain follower is still reachable. */
-#define EMH_HOIST_FP
 #include "hash_table8.h"
 
 #define EMH_NAME emap

@@ -2,7 +2,6 @@
  * Counts allocations vs frees to detect leaks. Exercises insert, lookup,
  * overwrite, erase, erase_if, clone, clear, deinit, rehash trigger.
  */
-#define EMH_HOIST_FP
 #include "hash_table8.h"
 
 #include <stdio.h>

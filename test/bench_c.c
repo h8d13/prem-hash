@@ -3,7 +3,6 @@
  *
  * Usage: bench_c <N>
  */
-#define EMH_HOIST_FP
 #include "hash_table8.h"
 
 #define EMH_NAME  imap

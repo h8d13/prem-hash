@@ -33,8 +33,6 @@ Global defines, set before first include. See `hash_table8.h:10-18` for the cano
 
 | flag                   | effect                                                       | cost                |
 |------------------------|--------------------------------------------------------------|---------------------|
-| `EMH_HOIST_FP`         | hoist fingerprint out of probe loop                         | none, currently set in `bench_c.c` |
-| `EMH_OPT_ALIGNED_ALLOC`| 64B-align `_index`/`_pairs` + assume_aligned                | requires C11 `aligned_alloc` |
 | `EMH_HASH_AESNI`       | AES-NI 2-round hash for u64/u32 keys                        | needs `-maes` / `__AES__` |
 | `EMH_SIMD_PROBE_GROUPS`| how many SIMD groups to scan in `find_empty_bucket`         | default 4 |
 | `EMH_SIZE_T`           | bucket index width, default `uint32_t`                      | use `uint64_t` for > 2^31 entries |
@@ -80,6 +78,42 @@ Commit `results.csv` alongside code changes so the log lives in git too.
 - Commits: `type(scope): subject`. Squash WIP before merging dot-c -> main.
 - POD K/V assumed (memcpy on move). For owned types use `EMH_KEY_COPY` / `EMH_KEY_DESTROY`. Rehash is unsafe for non-trivially-movable types; pre-`_reserve` if you store anything refcounted or self-referential.
 - OOM = `abort` via `assert(p)` on alloc. Note: `NDEBUG` builds will deref NULL instead; if you ship this, surface alloc failure properly.
+
+## Serial lookup: use `_prefetch` for ~30-40% wins
+
+The single biggest hot spot at large N is the `_index[bucket]` cache miss on the
+critical path (`perf annotate` shows the `test`/`je` consuming the idx load
+accounts for ~37% of total cycles). The OoO core cannot speculate the address
+ahead of time because each lookup hashes to an independent bucket.
+
+A serial loop hides this by stride-prefetching the future key, the same trick
+`find_batch` uses internally:
+
+```c
+enum { PF_STRIDE = 40 };
+for (size_t i = 0; i < n; ++i) {
+    if (i + PF_STRIDE < n) imap_prefetch(&m, keys[i + PF_STRIDE]);
+    uint32_t v;
+    if (imap_get(&m, keys[i], &v)) sink += v;
+}
+```
+
+Measured on Raptor Lake i5-14600KF, N=15M splitmix u32 keys:
+
+| op          | naive     | with prefetch | win    |
+|-------------|-----------|---------------|--------|
+| lookup-hit  | 10.21 ns  | 6.75 ns       | -33.9% |
+| lookup-miss | 11.30 ns  | 6.62 ns       | -41.4% |
+
+`miss-pf` cache-pressure degradation (1M -> 15M) collapses from +41% to +8% --
+prefetched serial scans are nearly cache-flat. `find_batch` does the same
+prefetch internally but pays array-return overhead; a simple `_prefetch + _get`
+serial loop matches or beats it for in-flight code.
+
+These numbers are *not* tracked by the standard bench (which measures canonical
+API patterns: `_get`, `find_batch`, `_set`, `_erase`). To re-measure the
+prefetched path on your machine, add the loop above to a small ad-hoc harness;
+the lib itself is unchanged either way.
 
 ## Known gaps
 

@@ -9,9 +9,6 @@
  * of prefixed functions, all static inline so the header is header-only.
  *
  * Optional defines (global, before first include):
- *   EMH_HOIST_FP         hoist fingerprint out of probe loop in find_filled_slot
- *   EMH_OPT_ALIGNED_ALLOC  64-byte-align _index/_pairs; enables assume_aligned
- *                          hints in the lookup hot path (find_filled_*).
  *   EMH_MALLOC(sz)       custom allocator
  *   EMH_FREE(p)          custom deallocator
  *   EMH_CACHE_LINE_SIZE  (default 64)
@@ -117,10 +114,7 @@
 #  define EMH_CACHE_LINE_SIZE 64u
 #endif
 
-/* Perf flag: EMH_OPT_ALIGNED_ALLOC
- *   64-byte-align _index and _pairs via aligned_alloc.
- *   Benefits hardware prefetcher and cache-line utilization.
- *   restrict on the probe and lookup loops is always enabled on GCC/Clang. */
+/* restrict on the probe and lookup loops is always enabled on GCC/Clang. */
 #if defined(__GNUC__) || defined(__clang__)
 #  define EMH__RESTRICT __restrict__
 #else
@@ -311,25 +305,17 @@ typedef struct EMH_NAME {
 #define EMH__EQFP(m, n, fp)      ((fp) == ((m)->_index[(n)].slot & ~(m)->_mask))
 
 /* ---- allocation ----------------------------------------------------- */
-/* aligned_alloc requires size to be a multiple of alignment (C11). Round up. */
-#ifdef EMH_OPT_ALIGNED_ALLOC
-#  define EMH__ALLOC_BYTES(sz_bytes) \
-        aligned_alloc(64, (((sz_bytes) + 63u) & ~(size_t)63u))
-#else
-#  define EMH__ALLOC_BYTES(sz_bytes) EMH_MALLOC(sz_bytes)
-#endif
-
 static inline EMH__TP* EMH__FN(__alloc_pairs)(EMH__SZ cap)
 {
     if (!cap) return NULL;
-    EMH__TP* p = (EMH__TP*)EMH__ALLOC_BYTES((size_t)cap * sizeof(EMH__TP));
+    EMH__TP* p = (EMH__TP*)EMH_MALLOC((size_t)cap * sizeof(EMH__TP));
     assert(p);
     return p;
 }
 
 static inline EMH__TI* EMH__FN(__alloc_index)(EMH__SZ num_buckets)
 {
-    EMH__TI* p = (EMH__TI*)EMH__ALLOC_BYTES(((size_t)num_buckets + EMH_EAD) * sizeof(EMH__TI));
+    EMH__TI* p = (EMH__TI*)EMH_MALLOC(((size_t)num_buckets + EMH_EAD) * sizeof(EMH__TI));
     assert(p);
     return p;
 }
@@ -339,10 +325,8 @@ static inline void EMH__FN(__dealloc_index)(EMH__TI* p)  { if (p) EMH_FREE(p); }
 
 static inline uint8_t* EMH__FN(__alloc_ctrl)(EMH__SZ num_buckets)
 {
-    /* +EMH_GROUP_WIDTH: safe overflow guard for SIMD loads past the last bucket.
-     * 64-byte alignment matches _index/_pairs so SIMD group loads never split
-     * across alignment boundaries (helps on older µarchs; free on modern). */
-    uint8_t* p = (uint8_t*)EMH__ALLOC_BYTES((size_t)num_buckets + EMH_GROUP_WIDTH);
+    /* +EMH_GROUP_WIDTH: safe overflow guard for SIMD loads past the last bucket. */
+    uint8_t* p = (uint8_t*)EMH_MALLOC((size_t)num_buckets + EMH_GROUP_WIDTH);
     assert(p);
     return p;
 }
