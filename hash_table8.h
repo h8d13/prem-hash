@@ -60,12 +60,18 @@
 /* SIMD ctrl byte group scan.
  * Each bucket has a 1-byte ctrl: 0x80=empty, 0x00=occupied.
  * emh_ctrl_mask_empty returns a bitmask where bit i is set if ctrl[i] is empty.
- * SSE2: 16-wide groups. Portable: 8-wide via 64-bit bithack. */
-#if defined(__SSE2__)
+ * AVX2: 32-wide groups. SSE2: 16-wide. Portable: 8-wide via 64-bit bithack. */
+#if defined(__AVX2__)
+#  include <immintrin.h>
+#  define EMH_GROUP_WIDTH 32u
+   static inline uint32_t emh_ctrl_mask_empty(const uint8_t* p) {
+       /* movemask extracts bit 7 of each byte. Empty = 0x80, so bit 7 = 1. */
+       return (uint32_t)_mm256_movemask_epi8(_mm256_loadu_si256((const __m256i*)p));
+   }
+#elif defined(__SSE2__)
 #  include <emmintrin.h>
 #  define EMH_GROUP_WIDTH 16u
    static inline uint32_t emh_ctrl_mask_empty(const uint8_t* p) {
-       /* movemask extracts bit 7 of each byte. Empty = 0x80, so bit 7 = 1. */
        return (uint32_t)_mm_movemask_epi8(_mm_loadu_si128((const __m128i*)p));
    }
 #else
@@ -137,6 +143,20 @@
  * (int)(uint32_t)-1 == -1; (int)(uint64_t)-1 truncates to (int)-1.    */
 #define EMH_NEG(x)                ((int)(x) < 0)
 
+/* AES-NI hash: two rounds, ~8-cycle latency, higher throughput than splitmix64
+ * on the AES execution unit. Enable with -DEMH_HASH_AESNI (requires __AES__). */
+#if defined(__AES__)
+#  include <wmmintrin.h>
+static inline uint64_t emh_hash_u64(uint64_t key)
+{
+    __m128i v = _mm_cvtsi64_si128((int64_t)key);
+    __m128i k = _mm_set_epi64x((int64_t)0x9e3779b97f4a7c15ULL,
+                                (int64_t)0x6c62272e07bb0142ULL);
+    v = _mm_aesenc_si128(v, k);
+    v = _mm_aesenc_si128(v, k);
+    return (uint64_t)_mm_cvtsi128_si64(v);
+}
+#else
 /* splitmix64, the upstream EMH_INT_HASH=0 default */
 static inline uint64_t emh_hash_u64(uint64_t key)
 {
@@ -146,6 +166,7 @@ static inline uint64_t emh_hash_u64(uint64_t key)
     x = x ^ (x >> 31);
     return x;
 }
+#endif
 static inline uint64_t emh_hash_u32(uint32_t k) { return emh_hash_u64((uint64_t)k); }
 static inline uint64_t emh_hash_i32(int32_t  k) { return emh_hash_u64((uint64_t)(uint32_t)k); }
 static inline uint64_t emh_hash_i64(int64_t  k) { return emh_hash_u64((uint64_t)k); }
@@ -332,8 +353,10 @@ static inline void EMH__FN(__dealloc_index)(EMH__TI* p)  { if (p) EMH_FREE(p); }
 
 static inline uint8_t* EMH__FN(__alloc_ctrl)(EMH__SZ num_buckets)
 {
-    /* +EMH_GROUP_WIDTH: safe overflow guard for SIMD loads past the last bucket. */
-    uint8_t* p = (uint8_t*)EMH_MALLOC((size_t)num_buckets + EMH_GROUP_WIDTH);
+    /* +EMH_GROUP_WIDTH: safe overflow guard for SIMD loads past the last bucket.
+     * 64-byte alignment matches _index/_pairs so SIMD group loads never split
+     * across alignment boundaries (helps on older µarchs; free on modern). */
+    uint8_t* p = (uint8_t*)EMH__ALLOC_BYTES((size_t)num_buckets + EMH_GROUP_WIDTH);
     assert(p);
     return p;
 }
@@ -512,11 +535,9 @@ EMH_HOT EMH__SZ EMH__FN(__find_filled_bucket)(const EMH__T* m, EMH_KEY key, uint
     const EMH__SZ fp_mask = ~mask;
     const EMH__SZ fp_key  = (EMH__SZ)key_hash & fp_mask;
     const EMH__SZ bucket  = (EMH__SZ)key_hash & mask;
-    /* ctrl is 8x denser than idx; check it first to avoid the idx load on
-     * empty-main-bucket misses (~20% at 80% load, grows as table exceeds L3). */
-    if (EMH_UNLIKELY(m->_ctrl[bucket] & 0x80))
-        return EMH__INACTIVE;
     EMH__SZ next_bucket   = idx[bucket].next;
+    if (EMH_UNLIKELY(EMH_NEG(next_bucket)))
+        return EMH__INACTIVE;
 
     {
         const EMH__SZ entry = idx[bucket].slot;
@@ -542,6 +563,46 @@ EMH_HOT EMH__SZ EMH__FN(__find_filled_bucket)(const EMH__T* m, EMH_KEY key, uint
     }
 }
 
+/* Pair-pointer-returning lookup with pre-computed hash (for find_batch).
+ * Returns NULL if absent. No ctrl check; uses INACTIVE sentinel on idx.next.
+ * Returning the pair pointer directly avoids a second m->_pairs dereference
+ * in the caller (the compiler cannot keep m->_pairs in a register across the
+ * function boundary without this). */
+EMH_HOT const EMH__TP* EMH__FN(__find_pair_h)(const EMH__T* m, EMH_KEY key, uint64_t key_hash)
+{
+    const EMH__TI* EMH__RESTRICT idx = m->_index;
+    const EMH__SZ mask    = m->_mask;
+    const EMH__SZ fp_mask = ~mask;
+    const EMH__SZ fp_key  = (EMH__SZ)key_hash & fp_mask;
+    const EMH__SZ bucket  = (EMH__SZ)key_hash & mask;
+    EMH__SZ next_bucket   = idx[bucket].next;
+    if (EMH_UNLIKELY(EMH_NEG(next_bucket)))
+        return NULL;
+
+    {
+        const EMH__SZ entry = idx[bucket].slot;
+        if (fp_key == (entry & fp_mask)) {
+            const EMH__SZ eslot = entry & mask;
+            if (EMH_LIKELY(EMH_EQ(key, m->_pairs[eslot].first)))
+                return &m->_pairs[eslot];
+        }
+    }
+    if (next_bucket == bucket)
+        return NULL;
+
+    for (;;) {
+        const EMH__SZ entry = idx[next_bucket].slot;
+        if (fp_key == (entry & fp_mask)) {
+            const EMH__SZ eslot = entry & mask;
+            if (EMH_LIKELY(EMH_EQ(key, m->_pairs[eslot].first)))
+                return &m->_pairs[eslot];
+        }
+        const EMH__SZ nbucket = idx[next_bucket].next;
+        if (nbucket == next_bucket) return NULL;
+        next_bucket = nbucket;
+    }
+}
+
 /* Returns slot index containing key, or _num_filled (= sentinel "not found"). */
 EMH_HOT EMH__SZ EMH__FN(__find_filled_slot)(const EMH__T* m, EMH_KEY key)
 {
@@ -553,9 +614,9 @@ EMH_HOT EMH__SZ EMH__FN(__find_filled_slot)(const EMH__T* m, EMH_KEY key)
     const uint64_t key_hash  = EMH__FN(__hash_key)(key);
     const EMH__SZ fp_key = (EMH__SZ)key_hash & fp_mask;
     const EMH__SZ bucket = (EMH__SZ)key_hash & mask;
-    if (EMH_UNLIKELY(m->_ctrl[bucket] & 0x80))
-        return num_filled;
     EMH__SZ next_bucket  = idx[bucket].next;
+    if (EMH_UNLIKELY(EMH_NEG(next_bucket)))
+        return num_filled;
 
     {
         const EMH__SZ entry = idx[bucket].slot;
@@ -732,6 +793,16 @@ EMH_HOT void EMH__FN(__erase_slot)(EMH__T* m, EMH__SZ sbucket, EMH__SZ main_buck
     const EMH__SZ slot      = m->_index[sbucket].slot & m->_mask;
     const EMH__SZ ebucket   = EMH__FN(__erase_bucket)(m, sbucket, main_bucket);
     const EMH__SZ last_slot = --m->_num_filled;
+#ifdef EMH_FAST_ERASE
+    /* When __erase_bucket handles a main-bucket erase (sbucket != ebucket), it
+     * copies the chain-follower's idx entry from ebucket into sbucket, then
+     * marks ebucket for freeing. The chain-follower's rev_bucket still points
+     * to ebucket (now freed). Fix it here before any further rev_bucket reads. */
+    if (sbucket != ebucket) {
+        const EMH__SZ cslot = m->_index[sbucket].slot & m->_mask;
+        m->_rev_bucket[cslot] = sbucket;
+    }
+#endif
 
     /* Destroy old contents of the slot being erased. For owned types
      * (strdup'd keys etc.) this releases the memory. For POD the macros
@@ -750,6 +821,11 @@ EMH_HOT void EMH__FN(__erase_slot)(EMH__T* m, EMH__SZ sbucket, EMH__SZ main_buck
         /* Move-by-memcpy: bytes from last_slot transfer to slot, ownership
          * follows. last_slot's bytes are stale but unused (num_filled decr). */
         m->_pairs[slot] = m->_pairs[last_slot];
+        /* When erasing a main-bucket entry, __erase_bucket copies the
+         * chain-follower into sbucket and returns its old bucket as ebucket.
+         * If the chain-follower happened to be the last pair (last_bucket ==
+         * ebucket before the rev_bucket fix above), last_bucket now equals
+         * sbucket (fixed). Either way the normal update path is correct. */
         m->_index[last_bucket].slot = slot | (m->_index[last_bucket].slot & ~m->_mask);
 #ifdef EMH_FAST_ERASE
         m->_rev_bucket[slot] = last_bucket;
@@ -1025,44 +1101,27 @@ static inline void EMH__FN(_erase_at)(EMH__T* m, size_t slot)
 static inline void EMH__FN(_prefetch)(const EMH__T* m, EMH_KEY key)
 {
     const EMH__SZ bucket = (EMH__SZ)EMH__FN(__hash_key)(key) & m->_mask;
-    EMH_PREFETCH(&m->_ctrl[bucket]);
     EMH_PREFETCH(&m->_index[bucket]);
 }
 
 /* out[i] = pointer to pair or NULL if absent. Stride 40 near-peak on x86.
  * `EMH_KEY const*` (not `const EMH_KEY*`) so const binds to the element
  * even when EMH_KEY is a pointer type like `char*`.
- * Hash ring: compute each key's hash once, use for both prefetch and lookup.
- * Without the ring, _prefetch() and __find_filled_slot() each hash keys[i],
- * doubling the hash work per key.                                          */
+ * Uses __find_slot_h: takes pre-computed hash (shared with prefetch),
+ * returns slot directly (no second _index[bucket].slot reload after call). */
 static inline void EMH__FN(_find_batch)(const EMH__T* m, EMH_KEY const* keys, size_t n,
-                                        const EMH__TP** out)
+                                        const EMH__TP* EMH__RESTRICT * EMH__RESTRICT out)
 {
     enum { STRIDE = 40 };
-    uint64_t hring[STRIDE];
-    size_t wi = 0;
-
-    const size_t pre = n < (size_t)STRIDE ? n : (size_t)STRIDE;
-    for (size_t j = 0; j < pre; ++j) {
-        hring[j] = EMH__FN(__hash_key)(keys[j]);
-        const EMH__SZ b = (EMH__SZ)hring[j] & m->_mask;
-        EMH_PREFETCH(&m->_ctrl[b]);
-        EMH_PREFETCH(&m->_index[b]);
-    }
-
+    const EMH__TI* EMH__RESTRICT idx = m->_index;
+    const EMH__SZ mask = m->_mask;
     for (size_t i = 0; i < n; ++i) {
-        const uint64_t h     = hring[wi];
-        const EMH__SZ bucket = EMH__FN(__find_filled_bucket)(m, keys[i], h);
-        out[i] = (bucket != EMH__INACTIVE)
-            ? &m->_pairs[m->_index[bucket].slot & m->_mask]
-            : NULL;
         if (i + STRIDE < n) {
-            hring[wi] = EMH__FN(__hash_key)(keys[i + STRIDE]);
-            const EMH__SZ b = (EMH__SZ)hring[wi] & m->_mask;
-            EMH_PREFETCH(&m->_ctrl[b]);
-            EMH_PREFETCH(&m->_index[b]);
+            const EMH__SZ b = (EMH__SZ)EMH__FN(__hash_key)(keys[i + STRIDE]) & mask;
+            EMH_PREFETCH(&idx[b]);
         }
-        if (++wi == (size_t)STRIDE) wi = 0;
+        const uint64_t h = EMH__FN(__hash_key)(keys[i]);
+        out[i] = EMH__FN(__find_pair_h)(m, keys[i], h);
     }
 }
 
