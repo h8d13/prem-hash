@@ -43,10 +43,19 @@ int main(int argc, char** argv)
     imap m; imap_init(&m, 16);
     imap_reserve(&m, N, 0);
 
-    /* insert */
+    /* insert (cold: reserve(N) leaves capacity for ~0.8N, so 1 rehash fires
+     * mid-loop. Measures growth-inclusive insert.) */
     double t0 = now_ns();
     for (size_t i = 0; i < N; ++i) imap_set(&m, keys[i], (uint32_t)i);
     double t1 = now_ns();
+
+    /* insert-fitted: same N but pre-sized so zero rehash fires. Isolates
+     * steady-state insert cost from growth-path cost.                      */
+    imap m2; imap_init(&m2, 16);
+    imap_reserve(&m2, (uint64_t)((double)N / 0.79), 0);  /* slack vs lf=0.8 */
+    double tF0 = now_ns();
+    for (size_t i = 0; i < N; ++i) imap_set(&m2, keys[i], (uint32_t)i);
+    double tF1 = now_ns();
 
     /* hit: serial _get with stride prefetch of the future key.
      * Recommended pattern for any loop over a known key array. */
@@ -86,6 +95,7 @@ int main(int argc, char** argv)
 
     printf("[C  port] N=%zu  sink=%lu\n", N, (unsigned long)sink);
     printf("  insert:        %7.2f ns/op  (%.2f Mops/s)\n", (t1-t0)/N, 1000.0/((t1-t0)/N));
+    printf("  insert-fitted: %7.2f ns/op  (%.2f Mops/s)\n", (tF1-tF0)/N, 1000.0/((tF1-tF0)/N));
     printf("  lookup-hit:    %7.2f ns/op  (%.2f Mops/s)\n", (t3-t2)/N, 1000.0/((t3-t2)/N));
     printf("  lookup-miss:   %7.2f ns/op  (%.2f Mops/s)\n", (t5-t4)/N, 1000.0/((t5-t4)/N));
     printf("  find_batch:    %7.2f ns/op  (%.2f Mops/s)\n", (t7-t6)/N, 1000.0/((t7-t6)/N));
@@ -93,5 +103,6 @@ int main(int argc, char** argv)
 
     free(out); free(keys); free(miss);
     imap_deinit(&m);
+    imap_deinit(&m2);
     return 0;
 }

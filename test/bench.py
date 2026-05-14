@@ -25,8 +25,9 @@ History lives in git (commit results.csv) plus the log itself.
 import argparse, subprocess, statistics, sys, os, csv, datetime
 from collections import defaultdict
 
-COLS   = ["insert", "hit", "miss", "batch", "erase"]
-LABELS = {"insert": "insert:", "hit": "lookup-hit:", "miss": "lookup-miss:",
+COLS   = ["insert", "fitted", "hit", "miss", "batch", "erase"]
+LABELS = {"insert": "insert:", "fitted": "insert-fitted:",
+          "hit": "lookup-hit:", "miss": "lookup-miss:",
           "batch": "find_batch:", "erase": "erase-half:"}
 LOG    = "results.csv"
 
