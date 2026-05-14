@@ -147,7 +147,9 @@ int main(int argc, char** argv)
 
         /* Periodically also verify whole-table consistency via independent
          * scan: every live ref key should be retrievable. Done every 64K
-         * ops to keep the harness fast.                                  */
+         * ops to keep the harness fast. Plus a miss-canary on a key that
+         * op_gen never touches, exercising the miss path even when the
+         * recorded gets happen to land on live keys.                     */
         if ((op_index & 0xFFFF) == 0) {
             size_t live = 0;
             for (size_t i = 0; i < imap_size(&m); ++i) {
@@ -157,6 +159,12 @@ int main(int argc, char** argv)
                 live++;
             }
             if (live != ref_count) return FAIL("pair scan: size mismatch", op_index);
+            /* Miss canary: keys above MAX_KEY_SPACE/2 are never set by op_gen
+             * (its keyspace param is much smaller). All should miss.       */
+            for (uint32_t k = MAX_KEY_SPACE - 16; k < MAX_KEY_SPACE; ++k) {
+                uint32_t v;
+                if (imap_get(&m, k, &v)) return FAIL("miss canary hit", op_index);
+            }
         }
     }
 
@@ -171,8 +179,26 @@ int main(int argc, char** argv)
         if (ref_val[p->first] != p->second) return FAIL("final scan: value mismatch", -1);
     }
 
-    printf("OK: replay  ops=%ld  set=%ld erase=%ld get=%ld(hit=%ld miss=%ld)  ckpts=%ld  final_size=%zu\n",
-           op_index, n_set, n_erase, n_get, n_get_hit, n_get_miss, n_checkpoint, imap_size(&m));
+    /* Final miss sweep: probe a wide range of keys cross-checked against
+     * ref_live. Exercises the miss path explicitly when op_gen's stream
+     * didn't (LCG correlation sometimes produces hit-only get patterns). */
+    long miss_sweep_checked = 0, miss_sweep_correct = 0;
+    for (uint32_t k = 0; k < MAX_KEY_SPACE; k += 137) {  /* sparse, fast */
+        uint32_t got;
+        int hit = imap_get(&m, k, &got);
+        if (ref_live[k]) {
+            if (!hit) return FAIL("miss sweep: live key missed", (long)k);
+            if (got != ref_val[k]) return FAIL("miss sweep: wrong value", (long)k);
+        } else {
+            if (hit) return FAIL("miss sweep: absent key hit", (long)k);
+            miss_sweep_correct++;
+        }
+        miss_sweep_checked++;
+    }
+
+    printf("OK: replay  ops=%ld  set=%ld erase=%ld get=%ld(hit=%ld miss=%ld)  ckpts=%ld  final_size=%zu  miss_sweep=%ld/%ld\n",
+           op_index, n_set, n_erase, n_get, n_get_hit, n_get_miss, n_checkpoint, imap_size(&m),
+           miss_sweep_correct, miss_sweep_checked);
 
     imap_deinit(&m);
     fclose(f);
