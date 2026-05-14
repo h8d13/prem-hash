@@ -67,3 +67,4 @@ profile: bench_c.c $(HEADER)
 
 clean:
 	rm -f bench_c test_strkeys test_lazy_ctrl test_oom test_oom_ndebug test_replay op_gen *.san
+	rm -f examples/wordcount
