@@ -9,6 +9,7 @@
 #define EMH_VAL  uint32_t
 #define EMH_HASH(k) emh_hash_u32(k)
 #define EMH_EQ(a,b) ((a)==(b))
+#define EMH_POD_KV
 #include "hash_table8.h"
 
 #include <stdio.h>

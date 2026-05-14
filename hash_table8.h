@@ -142,7 +142,8 @@
 #define EMH_NEG(x)                ((int)(x) < 0)
 
 /* AES-NI hash: two rounds, ~8-cycle latency, higher throughput than splitmix64
- * on the AES execution unit. Enable with -DEMH_HASH_AESNI (requires __AES__). */
+ * on the AES execution unit. Auto-selected when __AES__ is defined (compiler
+ * sets this with -maes or -march=native on AES-capable CPUs). */
 #if defined(__AES__)
 #  include <wmmintrin.h>
 static inline uint64_t emh_hash_u64(uint64_t key)
@@ -252,15 +253,20 @@ static inline uint64_t emh_hash_str(const char* key, size_t len)
 #  define EMH__EQ_WAS_DEFAULT
 #endif
 
-/* Optional ownership hooks. Defaults are trivial: assignment for COPY,
- * no-op for DESTROY. Override to support owned types (e.g. strdup keys):
- *   #define EMH_KEY_COPY(dst, src)  ((dst) = strdup(src))
- *   #define EMH_KEY_DESTROY(k)      free((char*)(k))
- * Hooks fire on insert/set-overwrite/erase/clear/deinit/clone.
- * Rehash uses raw memcpy (memcpy-move semantics): correct for ownership
- * models where bitwise copy transfers ownership (strdup-style). For
- * refcounted or otherwise non-trivially-movable types, rehash is unsafe;
- * pre-reserve to avoid it.                                              */
+/* POD invariant: rehash moves pairs via raw memcpy. This is unsafe for
+ * types containing pointers to themselves (SSO strings, intrusive nodes,
+ * refcounted handles). To use this header you MUST opt in via one of:
+ *   #define EMH_POD_KV      // I confirm K and V are bitwise-copyable
+ * OR
+ *   #define EMH_KEY_COPY/EMH_KEY_DESTROY (and VAL_*)  // owned-type hooks
+ * The owned-type hooks must implement deep-copy semantics; rehash will
+ * memcpy the raw bytes, which is correct for ownership models where the
+ * bitwise copy transfers ownership (strdup-style: pointer moves, old
+ * struct is forgotten). Pre-`_reserve` to skip rehash if your owned-type
+ * is not memcpy-move-safe.                                              */
+#if !defined(EMH_POD_KV) && !defined(EMH_KEY_COPY)
+#  error "Define EMH_POD_KV for trivially-copyable K/V, or EMH_KEY_COPY/EMH_KEY_DESTROY for owned types. See hash_table8.h comment for details."
+#endif
 #ifndef EMH_KEY_COPY
 #  define EMH_KEY_COPY(dst, src) ((dst) = (src))
 #  define EMH__KEY_COPY_WAS_DEFAULT
@@ -294,7 +300,7 @@ typedef struct EMH__FN(__pair)  { EMH_KEY first; EMH_VAL second; } EMH__TP;
 typedef struct EMH_NAME {
     EMH__TI* _index;
     EMH__TP* _pairs;
-    uint8_t* _ctrl;              /* 1 byte/bucket: EMH_CTRL_EMPTY or EMH_CTRL_FULL */
+    uint8_t* _ctrl;              /* 1 byte/bucket: 0x80=empty, 0x00=foreigner, 0x01=main */
     uint32_t _mlf;               /* (1<<28) / max_load_factor */
     EMH__SZ  _mask;              /* num_buckets - 1 */
     EMH__SZ  _num_buckets;
@@ -306,22 +312,23 @@ typedef struct EMH_NAME {
 
 /* ---- index-cell predicates ------------------------------------------ */
 #define EMH__EMPTY(m, n)         EMH_NEG((m)->_index[(n)].next)
-#define EMH__EQHASH(m, n, kh)    ((((EMH__SZ)(kh)) & ~(m)->_mask) == ((m)->_index[(n)].slot & ~(m)->_mask))
-#define EMH__EQFP(m, n, fp)      ((fp) == ((m)->_index[(n)].slot & ~(m)->_mask))
 
 /* ---- allocation ----------------------------------------------------- */
+/* OOM policy: alloc failure aborts via abort(). assert(p) was unsafe under
+ * NDEBUG (compiles away, leaves caller dereferencing NULL). If you need
+ * propagating error returns, wrap EMH_MALLOC and handle NULL upstream.   */
 static inline EMH__TP* EMH__FN(__alloc_pairs)(EMH__SZ cap)
 {
     if (!cap) return NULL;
     EMH__TP* p = (EMH__TP*)EMH_MALLOC((size_t)cap * sizeof(EMH__TP));
-    assert(p);
+    if (!p) abort();
     return p;
 }
 
 static inline EMH__TI* EMH__FN(__alloc_index)(EMH__SZ num_buckets)
 {
     EMH__TI* p = (EMH__TI*)EMH_MALLOC(((size_t)num_buckets + EMH_EAD) * sizeof(EMH__TI));
-    assert(p);
+    if (!p) abort();
     return p;
 }
 
@@ -332,7 +339,7 @@ static inline uint8_t* EMH__FN(__alloc_ctrl)(EMH__SZ num_buckets)
 {
     /* +EMH_GROUP_WIDTH: safe overflow guard for SIMD loads past the last bucket. */
     uint8_t* p = (uint8_t*)EMH_MALLOC((size_t)num_buckets + EMH_GROUP_WIDTH);
-    assert(p);
+    if (!p) abort();
     return p;
 }
 static inline void EMH__FN(__dealloc_ctrl)(uint8_t* p) { if (p) EMH_FREE(p); }
@@ -370,18 +377,16 @@ EMH_HOT EMH__SZ EMH__FN(__hash_bucket)(const EMH__T* m, EMH_KEY key) {
 }
 
 /* ---- probe: find an empty bucket ------------------------------------ */
-/* See upstream comment block at find_empty_bucket. 3-way linear/quadratic
- * probe. Returns an empty bucket (next field == INACTIVE).             */
-/* How many GROUP_WIDTH steps to attempt via SIMD before falling back to the
- * scalar _index scan.  Keeps erase O(1) (no ctrl write needed) while
- * retaining the SIMD fast path for freshly-inserted or post-rehash tables. */
+/* 3-way probe: 2 immediate neighbors, then SIMD group scan, then scalar
+ * walk. Returns an empty bucket index (one whose .next == INACTIVE).
+ * EMH_SIMD_PROBE_GROUPS bounds how many groups the SIMD scan tries
+ * before falling back to the scalar cursor walk over _index.             */
 #ifndef EMH_SIMD_PROBE_GROUPS
 #  define EMH_SIMD_PROBE_GROUPS 4u
 #endif
 
-EMH_HOT EMH__SZ EMH__FN(__find_empty_bucket)(EMH__T* m, EMH__SZ bucket_from, uint32_t csize)
+EMH_HOT EMH__SZ EMH__FN(__find_empty_bucket)(EMH__T* m, EMH__SZ bucket_from)
 {
-    (void)csize;
     const uint8_t* EMH__RESTRICT ctrl = m->_ctrl;
     const EMH__TI* EMH__RESTRICT idx  = m->_index;
     const EMH__SZ mask        = m->_mask;
@@ -620,7 +625,7 @@ EMH_HOT EMH__SZ EMH__FN(__kickout_bucket)(EMH__T* m, EMH__SZ bucket)
     const EMH__SZ occ_slot = idx[bucket].slot & m->_mask;
     const EMH__SZ kmain    = (EMH__SZ)EMH__FN(__hash_key)(m->_pairs[occ_slot].first) & m->_mask;
     const EMH__SZ next_bucket = idx[bucket].next;
-    const EMH__SZ new_bucket  = EMH__FN(__find_empty_bucket)(m, next_bucket, 2);
+    const EMH__SZ new_bucket  = EMH__FN(__find_empty_bucket)(m, next_bucket);
     const EMH__SZ prev_bucket = EMH__FN(__find_prev_bucket)(m, kmain, bucket);
 
     const EMH__SZ last = (next_bucket == bucket) ? new_bucket : next_bucket;
@@ -659,32 +664,26 @@ EMH_HOT EMH__SZ EMH__FN(__find_or_allocate)(EMH__T* m, EMH_KEY key, uint64_t key
                 return bucket;
     }
     if (next_bucket == bucket) {
-        const EMH__SZ new_bucket = EMH__FN(__find_empty_bucket)(m, next_bucket, 1);
+        const EMH__SZ new_bucket = EMH__FN(__find_empty_bucket)(m, next_bucket);
         idx[next_bucket].next = new_bucket;
         return new_bucket;
     }
 
-    {
-        uint32_t csize = 1;
-        for (;;) {
-            const EMH__SZ entry = idx[next_bucket].slot;
-            const EMH__SZ eslot = entry & mask;
-            if (fp_key == (entry & fp_mask))
-                if (EMH_LIKELY(EMH_EQ(key, pairs[eslot].first)))
-                    return next_bucket;
+    for (;;) {
+        const EMH__SZ entry = idx[next_bucket].slot;
+        const EMH__SZ eslot = entry & mask;
+        if (fp_key == (entry & fp_mask))
+            if (EMH_LIKELY(EMH_EQ(key, pairs[eslot].first)))
+                return next_bucket;
 
-            csize += 1;
-            {
-                const EMH__SZ nbucket = idx[next_bucket].next;
-                if (nbucket == next_bucket) break;
-                next_bucket = nbucket;
-            }
-        }
-        {
-            const EMH__SZ new_bucket = EMH__FN(__find_empty_bucket)(m, next_bucket, csize);
-            idx[next_bucket].next = new_bucket;
-            return new_bucket;
-        }
+        const EMH__SZ nbucket = idx[next_bucket].next;
+        if (nbucket == next_bucket) break;
+        next_bucket = nbucket;
+    }
+    {
+        const EMH__SZ new_bucket = EMH__FN(__find_empty_bucket)(m, next_bucket);
+        idx[next_bucket].next = new_bucket;
+        return new_bucket;
     }
 }
 
@@ -703,7 +702,7 @@ EMH_HOT EMH__SZ EMH__FN(__find_unique_bucket)(EMH__T* m, uint64_t key_hash)
             next_bucket = EMH__FN(__find_last_bucket)(m, next_bucket);
     }
     {
-        const EMH__SZ new_bucket = EMH__FN(__find_empty_bucket)(m, next_bucket, 2);
+        const EMH__SZ new_bucket = EMH__FN(__find_empty_bucket)(m, next_bucket);
         m->_index[next_bucket].next = new_bucket;
         return new_bucket;
     }
@@ -1103,8 +1102,6 @@ static inline size_t EMH__FN(_erase_if)(EMH__T* m,
 
 /* ---- cleanup macros ------------------------------------------------- */
 #undef EMH__EMPTY
-#undef EMH__EQHASH
-#undef EMH__EQFP
 #undef EMH__CAT_
 #undef EMH__CAT
 #undef EMH__FN
@@ -1118,6 +1115,9 @@ static inline size_t EMH__FN(_erase_if)(EMH__T* m,
 #undef EMH_KEY
 #undef EMH_VAL
 #undef EMH_HASH
+#ifdef EMH_POD_KV
+#  undef EMH_POD_KV
+#endif
 #ifdef EMH__EQ_WAS_DEFAULT
 #  undef EMH__EQ_WAS_DEFAULT
 #endif
