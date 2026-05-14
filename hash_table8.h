@@ -1,7 +1,8 @@
 /* C port of emhash8::HashMap 
- * Source: https://github.com/h8d13/prem-hash (fork of ktprime/emhash).
+ * Source: ktprime/emhash
  * MIT, Copyright (c) 2021-2026
- * C port follows same algorithm and probe strategy, missing quite a few features.
+ * C port follows same algorithm and probe strategy, missing quite a few features. 
+ * Added absl inspired ctrl bytes.
  *
  * Style: include-twice (stb-style). First include defines common helpers and
  * macros. Subsequent includes with EMH_NAME/EMH_KEY/EMH_VAL/EMH_HASH defined
@@ -27,18 +28,7 @@
  *   _index[b].slot low bits  = slot index in _pairs
  *   _index[b].slot high bits = fingerprint (key_hash & ~_mask)
  *
- * Differences from C++ original (by design):
- *   - No iterators. Walk dense `_pairs[0.._num_filled)` directly.
- *   - No operator[]. Use NAME_get_or_insert.
- *   - No emplace/try_emplace/insert_or_assign variants. Use insert / set.
- *   - No std::initializer_list/range constructors.
- *   - No allocator_type template. malloc/free or EMH_MALLOC/EMH_FREE.
- *   - No is_trivially_copyable dispatch. Assumes POD K/V (memcpy on move).
- *     For non-POD K/V (e.g. C-string requiring strdup), insert/erase hooks
- *     are caller's responsibility.
- *   - No exception. Out-of-memory aborts via malloc returning NULL (assert).
- *   - dump_statics, EMH_SORT, EMH_HIGH_LOAD, EMH_PACK_TAIL: omitted.
- */
+ * */
 
 #ifndef EMH_HASH_TABLE8_H
 #define EMH_HASH_TABLE8_H

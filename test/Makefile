@@ -3,9 +3,14 @@ CFLAGS  = -std=c11  -D_POSIX_C_SOURCE=200809L -O3 -Wall -Wextra -I..
 SAN_FLAGS = -fsanitize=address,undefined -fno-omit-frame-pointer -g
 HEADER  = ../hash_table8.h
 
-.PHONY: all test bench clean test-san
+.PHONY: all test bench clean test-san examples
 
 all: bench_c test_strkeys test_lazy_ctrl test_oom test_oom_ndebug test_replay op_gen
+
+examples: examples/wordcount
+
+examples/wordcount: examples/wordcount.c $(HEADER)
+	$(CC) $(CFLAGS) $< -o $@
 
 bench_c: bench_c.c $(HEADER)
 	$(CC) $(CFLAGS) -march=native $< -o $@
