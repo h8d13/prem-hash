@@ -1,0 +1,21 @@
+# Build outputs from test/Makefile
+test/bench_c
+test/op_gen
+test/test_lazy_ctrl
+test/test_oom
+test/test_oom_ndebug
+test/test_replay
+test/test_strkeys
+test/examples/wordcount
+
+# Sanitizer / snapshot variants
+test/*.san
+test/bench_c.base
+test/bench_c.vanilla
+test/bench_c.vanilla_pf
+
+# Tool outputs
+test/perf.data
+test/perf.data.old
+*.o
+*.dSYM
