@@ -103,6 +103,19 @@ def _print_section(variants, medians, label, val_fn):
             print(f"  {v:<12}{nums}{pcts}")
 
 
+def print_degradation(variants, sizes, all_medians):
+    lo, hi = sizes[0], sizes[-1]
+    print(f"\n  cache-pressure degradation  ({fmt_n(lo)} -> {fmt_n(hi)}, +% = worse)")
+    hdr = f"  {'variant':<12}" + "".join(f"{c:>8}" for c in COLS)
+    print(hdr)
+    print(f"  {'-' * (len(hdr) - 2)}")
+    for v in variants:
+        lo_m = all_medians[lo][v]
+        hi_m = all_medians[hi][v]
+        vals = "".join(f"{((hi_m[c]/lo_m[c])-1)*100:>+7.1f}%" for c in COLS)
+        print(f"  {v:<12}{vals}")
+
+
 def print_table(variants, n, trials, medians):
     print(f"\nN={fmt_n(n)}  {trials} trials")
     _print_section(variants, medians, "ns/op  (lower-better)", lambda x: x)
@@ -210,7 +223,7 @@ def cmd_discard(var):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("sizes", nargs="*", default=["1m", "5m", "15m", "45m"],
+    ap.add_argument("sizes", nargs="*", default=["256k", "512k", "1m", "5m", "15m", "45m"],
                     help="N values to test, e.g. 1m 5m 10m")
     ap.add_argument("--trials", "-t", type=int, default=10,
                     help="trials per variant per N (default: 10)")
@@ -246,15 +259,20 @@ def main():
     check_binaries(variants)
     sizes = [parse_n(s) for s in args.sizes]
 
+    all_medians = {}
     for n in sizes:
         label = fmt_n(n)
         print(f"Running {len(variants)} variant(s) x {args.trials} trials @ N={label} ...",
               end="", flush=True)
         medians = collect(variants, n, args.trials)
+        all_medians[n] = medians
         print(" done")
         print_table(variants, n, args.trials, medians)
         if not args.no_save:
             append_log(variants, n, args.trials, medians)
+
+    if len(sizes) > 1:
+        print_degradation(variants, sizes, all_medians)
 
     if not args.no_save and sizes:
         print(f"\nSaved to {LOG}  (--list to review, --no-save to skip)")

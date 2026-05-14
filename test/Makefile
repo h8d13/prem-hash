@@ -11,6 +11,10 @@ all: bench_c test_strkeys test_lazy_ctrl op_gen
 bench_c: bench_c.c $(HEADER)
 	$(CC) $(CFLAGS) -march=native $< -o $@
 
+bench_cand: bench_c.c $(HEADER)
+	$(CC) $(CFLAGS) -march=native $< -o $@
+
+
 test_strkeys: test_strkeys.c $(HEADER)
 	$(CC) $(CFLAGS) $< -o $@
 
@@ -30,6 +34,9 @@ test: test_strkeys test_lazy_ctrl op_gen
 SIZES ?= 1m
 bench: test bench_c
 	./bench.py $(SIZES)
+
+profile: bench_c.c $(HEADER)
+	$(CC) $(CFLAGS) -march=native -g -fno-omit-frame-pointer $< -o bench_c
 
 clean:
 	rm -f bench_c test_strkeys test_lazy_ctrl op_gen
