@@ -80,7 +80,12 @@
    }
 #endif
 #define EMH_CTRL_EMPTY ((uint8_t)0x80)
+/* 2-bit encoding for occupancy + is_main: bit 7 = empty when set;
+ * bit 0 = is_main when set (occupant is in its own main bucket).
+ * EMH_CTRL_FULL (0x00): occupied, foreigner (kicked here from another class).
+ * EMH_CTRL_MAIN (0x01): occupied, in own main bucket. */
 #define EMH_CTRL_FULL  ((uint8_t)0x00)
+#define EMH_CTRL_MAIN  ((uint8_t)0x01)
 
 #if defined(__GNUC__) || defined(__clang__)
 #  define EMH_LIKELY(c)   __builtin_expect(!!(c), 1)
@@ -364,11 +369,6 @@ EMH_HOT EMH__SZ EMH__FN(__hash_bucket)(const EMH__T* m, EMH_KEY key) {
     return (EMH__SZ)EMH__FN(__hash_key)(key) & m->_mask;
 }
 
-EMH_HOT EMH__SZ EMH__FN(__hash_main)(const EMH__T* m, EMH__SZ bucket) {
-    const EMH__SZ slot = m->_index[bucket].slot & m->_mask;
-    return (EMH__SZ)EMH__FN(__hash_key)(m->_pairs[slot].first) & m->_mask;
-}
-
 /* ---- probe: find an empty bucket ------------------------------------ */
 /* See upstream comment block at find_empty_bucket. 3-way linear/quadratic
  * probe. Returns an empty bucket (next field == INACTIVE).             */
@@ -611,10 +611,14 @@ EMH_HOT EMH__SZ EMH__FN(__find_filled_slot)(const EMH__T* m, EMH_KEY key)
 }
 
 /* ---- kickout: relocate non-main occupant to an empty slot ----------- */
-/* See upstream diagram. Returns the freed bucket index (now empty-ready). */
-EMH_HOT EMH__SZ EMH__FN(__kickout_bucket)(EMH__T* m, EMH__SZ kmain, EMH__SZ bucket)
+/* Caller guarantees occupant of `bucket` is a foreigner (ctrl bit-0 clear).
+ * kmain is computed internally from pairs.first (one pairs load on this
+ * cold path only). Returns the freed bucket index (now empty-ready).    */
+EMH_HOT EMH__SZ EMH__FN(__kickout_bucket)(EMH__T* m, EMH__SZ bucket)
 {
     EMH__TI* EMH__RESTRICT idx = m->_index;
+    const EMH__SZ occ_slot = idx[bucket].slot & m->_mask;
+    const EMH__SZ kmain    = (EMH__SZ)EMH__FN(__hash_key)(m->_pairs[occ_slot].first) & m->_mask;
     const EMH__SZ next_bucket = idx[bucket].next;
     const EMH__SZ new_bucket  = EMH__FN(__find_empty_bucket)(m, next_bucket, 2);
     const EMH__SZ prev_bucket = EMH__FN(__find_prev_bucket)(m, kmain, bucket);
@@ -625,7 +629,7 @@ EMH_HOT EMH__SZ EMH__FN(__kickout_bucket)(EMH__T* m, EMH__SZ kmain, EMH__SZ buck
 
     idx[prev_bucket].next = new_bucket;
     idx[bucket].next      = EMH__INACTIVE;
-    m->_ctrl[new_bucket]  = EMH_CTRL_FULL;
+    m->_ctrl[new_bucket]  = EMH_CTRL_FULL;   /* relocated foreigner */
     m->_ctrl[bucket]      = EMH_CTRL_EMPTY;
     return bucket;
 }
@@ -643,20 +647,16 @@ EMH_HOT EMH__SZ EMH__FN(__find_or_allocate)(EMH__T* m, EMH_KEY key, uint64_t key
     if (EMH_NEG(next_bucket))
         return bucket;
 
+    /* Cached is_main bit in ctrl skips the pairs.first load on no-kickout. */
+    if (!(m->_ctrl[bucket] & EMH_CTRL_MAIN))
+        return EMH__FN(__kickout_bucket)(m, bucket);
+
     {
         const EMH__SZ entry = idx[bucket].slot;
         const EMH__SZ slot  = entry & mask;
         if (fp_key == (entry & fp_mask))
             if (EMH_LIKELY(EMH_EQ(key, pairs[slot].first)))
                 return bucket;
-
-        /* Bucket occupied. Check if occupant belongs here (i.e. its main
-         * bucket equals `bucket`). If not, kick it out to free this slot. */
-        {
-            const EMH__SZ kmain = EMH__FN(__hash_bucket)(m, pairs[slot].first);
-            if (kmain != bucket)
-                return EMH__FN(__kickout_bucket)(m, kmain, bucket);
-        }
     }
     if (next_bucket == bucket) {
         const EMH__SZ new_bucket = EMH__FN(__find_empty_bucket)(m, next_bucket, 1);
@@ -697,9 +697,8 @@ EMH_HOT EMH__SZ EMH__FN(__find_unique_bucket)(EMH__T* m, uint64_t key_hash)
         return bucket;
 
     {
-        const EMH__SZ kmain = EMH__FN(__hash_main)(m, bucket);
-        if (EMH_UNLIKELY(kmain != bucket))
-            return EMH__FN(__kickout_bucket)(m, kmain, bucket);
+        if (EMH_UNLIKELY(!(m->_ctrl[bucket] & EMH_CTRL_MAIN)))
+            return EMH__FN(__kickout_bucket)(m, bucket);
         if (EMH_UNLIKELY(next_bucket != bucket))
             next_bucket = EMH__FN(__find_last_bucket)(m, next_bucket);
     }
@@ -719,7 +718,9 @@ EMH_HOT void EMH__FN(__emit)(EMH__T* m, EMH_KEY key, EMH_VAL val,
     const EMH__SZ slot = m->_num_filled;
     EMH_KEY_COPY(pairs[slot].first,  key);
     EMH_VAL_COPY(pairs[slot].second, val);
-    m->_ctrl[bucket] = EMH_CTRL_FULL;
+    /* is_main: this entry's true home equals the bucket it's stored at */
+    const EMH__SZ main_bucket = (EMH__SZ)key_hash & m->_mask;
+    m->_ctrl[bucket] = (bucket == main_bucket) ? EMH_CTRL_MAIN : EMH_CTRL_FULL;
     m->_etail = bucket;
     idx[bucket].next = bucket;
     idx[bucket].slot = slot | ((EMH__SZ)key_hash & ~m->_mask);
@@ -825,9 +826,10 @@ static inline void EMH__FN(_rehash)(EMH__T* m, uint64_t required_buckets)
     for (EMH__SZ slot = 0; slot < m->_num_filled; ++slot) {
         const uint64_t key_hash = EMH__FN(__hash_key)(m->_pairs[slot].first);
         const EMH__SZ  bucket   = EMH__FN(__find_unique_bucket)(m, key_hash);
+        const EMH__SZ  mb       = (EMH__SZ)key_hash & m->_mask;
         m->_index[bucket].next = bucket;
         m->_index[bucket].slot = slot | ((EMH__SZ)key_hash & ~m->_mask);
-        m->_ctrl[bucket] = EMH_CTRL_FULL;
+        m->_ctrl[bucket] = (bucket == mb) ? EMH_CTRL_MAIN : EMH_CTRL_FULL;
     }
 }
 

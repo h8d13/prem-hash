@@ -2,19 +2,28 @@ CC     = gcc
 CXX    = g++
 CFLAGS  = -std=c11  -D_POSIX_C_SOURCE=200809L -O3 -Wall -Wextra -I..
 CXXFLAGS = -std=c++17 -O3 -Wall -Wextra -I..
-HEADER  = ../hash_table8.h
+HEADER    = ../hash_table8.h
+HEADER_BT = ../hash_table8_bt.h
 
-.PHONY: all test bench clean
+.PHONY: all test bench clean bt
 
 all: bench_c test_strkeys test_lazy_ctrl op_gen
 
+bt: bench_bt test_bt_correctness
+
 bench_c: bench_c.c $(HEADER)
+	$(CC) $(CFLAGS) -march=native $< -o $@
+
+bench_bt: bench_bt.c $(HEADER_BT)
 	$(CC) $(CFLAGS) -march=native $< -o $@
 
 test_strkeys: test_strkeys.c $(HEADER)
 	$(CC) $(CFLAGS) $< -o $@
 
 test_lazy_ctrl: test_lazy_ctrl.c $(HEADER)
+	$(CC) $(CFLAGS) $< -o $@
+
+test_bt_correctness: test_bt_correctness.c $(HEADER_BT)
 	$(CC) $(CFLAGS) $< -o $@
 
 op_gen: op_gen.c
@@ -25,6 +34,10 @@ test: test_strkeys test_lazy_ctrl op_gen
 	./test_strkeys
 	./test_lazy_ctrl
 	@echo "Tests passed."
+
+test_bt: test_bt_correctness
+	./test_bt_correctness
+	@echo "BT tests passed."
 
 # SIZES: space-separated N values passed to bench.py, e.g. make bench SIZES="1m 10m"
 SIZES ?= 1m
