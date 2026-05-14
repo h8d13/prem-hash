@@ -118,8 +118,9 @@ Commit `results.csv` alongside code changes so the log lives in git too.
 
 ## Conventions
 
-- Branch: `dot-c` is the C port (current). `main` is the older C++ patch series.
-- Commits: `type(scope): subject`. Squash WIP before merging dot-c -> main.
+- Branch: `main` is the C port (merged from `dot-c` in PR #1, 2026-05). The
+  earlier C++ patch series lives in pre-merge history before that commit.
+- Commits: `type(scope): subject`.
 
 ## Serial lookup: use `_prefetch` for ~30-40% wins
 
