@@ -19,3 +19,6 @@ test/perf.data
 test/perf.data.old
 *.o
 *.dSYM
+
+# Local reference sources (kernel/glibc/absl excerpts for study, not built)
+refs/

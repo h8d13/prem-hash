@@ -298,6 +298,7 @@ typedef struct EMH_NAME {
     EMH__SZ  _last;              /* probe cursor for find_empty_bucket */
     EMH__SZ  _etail;             /* last bucket assigned, or INACTIVE */
     EMH__SZ  _pairs_capacity;
+    EMH__SZ  _growth_left;       /* inserts remaining before rehash */
 } EMH__T;
 
 /* ---- index-cell predicates ------------------------------------------ */
@@ -714,6 +715,7 @@ EMH_HOT void EMH__FN(__emit)(EMH__T* m, EMH_KEY key, EMH_VAL val,
     idx[bucket].next = bucket;
     idx[bucket].slot = slot | ((EMH__SZ)key_hash & ~m->_mask);
     m->_num_filled = slot + 1;
+    --m->_growth_left;
 }
 
 /* ---- erase ---------------------------------------------------------- */
@@ -765,6 +767,7 @@ EMH_HOT void EMH__FN(__erase_slot)(EMH__T* m, EMH__SZ sbucket, EMH__SZ main_buck
     m->_index[ebucket].next = EMH__INACTIVE;
     m->_index[ebucket].slot = 0;
     m->_ctrl[ebucket]       = EMH_CTRL_EMPTY;
+    ++m->_growth_left;
 }
 
 /* ---- rebuild & rehash ---------------------------------------------- */
@@ -820,6 +823,16 @@ static inline void EMH__FN(_rehash)(EMH__T* m, uint64_t required_buckets)
         m->_index[bucket].slot = slot | ((EMH__SZ)key_hash & ~m->_mask);
         m->_ctrl[bucket] = (bucket == mb) ? EMH_CTRL_MAIN : EMH_CTRL_FULL;
     }
+    /* growth_left mirrors _reserve threshold: rehash when num_filled * mlf >> 28
+     * >= num_buckets. Smallest triggering N = ceil(num_buckets * 2^28 / mlf).
+     * Floor would underestimate by one for non-integral nb/lf (e.g. nb=4,
+     * lf=0.8 -> floor=3, ceil=4) and cause uint underflow in __emit.       */
+    {
+        const uint64_t thresh =
+            (((uint64_t)num_buckets << 28) + m->_mlf - 1) / m->_mlf;
+        m->_growth_left = (thresh > m->_num_filled)
+            ? (EMH__SZ)(thresh - m->_num_filled) : 0;
+    }
 }
 
 /* Grow if needed. Returns 1 if rehash happened. */
@@ -833,8 +846,11 @@ EMH_HOT int EMH__FN(_reserve)(EMH__T* m, uint64_t num_elems, int force)
     return 1;
 }
 
+/* Fast path on insert: one cmp. Slow path falls through to mul-based _reserve. */
 EMH_HOT int EMH__FN(__check_expand_need)(EMH__T* m)
 {
+    if (EMH_LIKELY(m->_growth_left > 0))
+        return 0;
     return EMH__FN(_reserve)(m, m->_num_filled, 0);
 }
 
@@ -850,6 +866,7 @@ static inline void EMH__FN(_init_mlf)(EMH__T* m, size_t bucket, float mlf)
     m->_pairs_capacity = 0;
     m->_last = 0;
     m->_etail = EMH__INACTIVE;
+    m->_growth_left = 0;
     m->_mlf = (uint32_t)((float)(1u << 28) / EMH_DEFAULT_LOAD_FACTOR);
     EMH__FN(_set_max_load_factor)(m, mlf);
     EMH__FN(_rehash)(m, bucket ? bucket : 2);
@@ -875,6 +892,9 @@ static inline void EMH__FN(_clear)(EMH__T* m)
     m->_last = 0;
     m->_num_filled = 0;
     m->_etail = EMH__INACTIVE;
+    m->_growth_left = (m->_num_buckets > 0)
+        ? (EMH__SZ)((((uint64_t)m->_num_buckets << 28) + m->_mlf - 1) / m->_mlf)
+        : 0;
 }
 
 static inline void EMH__FN(_deinit)(EMH__T* m)
@@ -1057,6 +1077,7 @@ static inline void EMH__FN(_clone)(EMH__T* dst, const EMH__T* src)
     dst->_last           = src->_last;
     dst->_mask           = src->_mask;
     dst->_etail          = src->_etail;
+    dst->_growth_left    = src->_growth_left;
 
     dst->_pairs = EMH__FN(__alloc_pairs)(src->_pairs_capacity);
     dst->_index = EMH__FN(__alloc_index)(src->_num_buckets);
