@@ -11,10 +11,6 @@ all: bench_c test_strkeys test_lazy_ctrl op_gen
 bench_c: bench_c.c $(HEADER)
 	$(CC) $(CFLAGS) -march=native $< -o $@
 
-bench_cand: bench_c.c $(HEADER)
-	$(CC) $(CFLAGS) -march=native $< -o $@
-
-
 test_strkeys: test_strkeys.c $(HEADER)
 	$(CC) $(CFLAGS) $< -o $@
 

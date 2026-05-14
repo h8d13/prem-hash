@@ -1,10 +1,7 @@
-/* Erase correctness: exercises the rev_bucket-stale-after-main-bucket-erase
- * path. When a main-bucket entry is erased, __erase_bucket copies the chain
- * follower's idx into sbucket and frees the follower's old bucket. Without
- * the rev_bucket[cslot]=sbucket fix, subsequent erases that move the chain
- * follower update the wrong (freed) bucket and the entry becomes unlookupable.
- */
-#define EMH_FAST_ERASE
+/* Erase correctness: exercises main-bucket erase chain rewiring and the
+ * lazy-ctrl model (ctrl[bucket] stays FULL after erase; idx.next=INACTIVE
+ * is the truth). Brute-finds a collision pair, erases the chain head, and
+ * verifies the chain follower is still reachable. */
 #define EMH_HOIST_FP
 #include "hash_table8.h"
 

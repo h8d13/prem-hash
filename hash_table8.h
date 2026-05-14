@@ -9,7 +9,6 @@
  * of prefixed functions, all static inline so the header is header-only.
  *
  * Optional defines (global, before first include):
- *   EMH_FAST_ERASE       enable O(1) erase via reverse-index (slot -> bucket)
  *   EMH_HOIST_FP         hoist fingerprint out of probe loop in find_filled_slot
  *   EMH_OPT_ALIGNED_ALLOC  64-byte-align _index/_pairs; enables assume_aligned
  *                          hints in the lookup hot path (find_filled_*).
@@ -297,9 +296,6 @@ typedef struct EMH_NAME {
     EMH__TI* _index;
     EMH__TP* _pairs;
     uint8_t* _ctrl;              /* 1 byte/bucket: EMH_CTRL_EMPTY or EMH_CTRL_FULL */
-#ifdef EMH_FAST_ERASE
-    EMH__SZ* _rev_bucket;        /* slot -> bucket; O(1) erase */
-#endif
     uint32_t _mlf;               /* (1<<28) / max_load_factor */
     EMH__SZ  _mask;              /* num_buckets - 1 */
     EMH__SZ  _num_buckets;
@@ -338,16 +334,6 @@ static inline EMH__TI* EMH__FN(__alloc_index)(EMH__SZ num_buckets)
     return p;
 }
 
-#ifdef EMH_FAST_ERASE
-static inline EMH__SZ* EMH__FN(__alloc_rev)(EMH__SZ cap)
-{
-    if (!cap) return NULL;
-    EMH__SZ* p = (EMH__SZ*)EMH__ALLOC_BYTES((size_t)cap * sizeof(EMH__SZ));
-    assert(p);
-    return p;
-}
-#endif
-
 static inline void EMH__FN(__dealloc_pairs)(EMH__TP* p)  { if (p) EMH_FREE(p); }
 static inline void EMH__FN(__dealloc_index)(EMH__TI* p)  { if (p) EMH_FREE(p); }
 
@@ -361,9 +347,6 @@ static inline uint8_t* EMH__FN(__alloc_ctrl)(EMH__SZ num_buckets)
     return p;
 }
 static inline void EMH__FN(__dealloc_ctrl)(uint8_t* p) { if (p) EMH_FREE(p); }
-#ifdef EMH_FAST_ERASE
-static inline void EMH__FN(__dealloc_rev)(EMH__SZ* p)    { if (p) EMH_FREE(p); }
-#endif
 
 /* ---- small accessors ------------------------------------------------ */
 static inline size_t EMH__FN(_size)         (const EMH__T* m) { return (size_t)m->_num_filled; }
@@ -500,7 +483,7 @@ EMH_HOT EMH__SZ EMH__FN(__find_prev_bucket)(const EMH__T* m, EMH__SZ main_bucket
 }
 
 /* Find which bucket points at this slot. Returns the bucket; writes
- * the main bucket out-param. Walks the chain. O(chain) without FAST_ERASE. */
+ * the main bucket out-param. Walks the chain. O(chain). */
 static inline EMH__SZ EMH__FN(__find_slot_bucket)(const EMH__T* m, EMH__SZ slot, EMH__SZ* main_out)
 {
     const uint64_t key_hash = EMH__FN(__hash_key)(m->_pairs[slot].first);
@@ -660,9 +643,6 @@ EMH_HOT EMH__SZ EMH__FN(__kickout_bucket)(EMH__T* m, EMH__SZ kmain, EMH__SZ buck
     idx[bucket].next      = EMH__INACTIVE;
     m->_ctrl[new_bucket]  = EMH_CTRL_FULL;
     m->_ctrl[bucket]      = EMH_CTRL_EMPTY;
-#ifdef EMH_FAST_ERASE
-    m->_rev_bucket[idx[new_bucket].slot & m->_mask] = new_bucket;
-#endif
     return bucket;
 }
 
@@ -757,9 +737,6 @@ EMH_HOT void EMH__FN(__emit)(EMH__T* m, EMH_KEY key, EMH_VAL val,
     EMH_VAL_COPY(pairs[slot].second, val);
     m->_ctrl[bucket] = EMH_CTRL_FULL;
     m->_etail = bucket;
-#ifdef EMH_FAST_ERASE
-    m->_rev_bucket[slot] = bucket;
-#endif
     idx[bucket].next = bucket;
     idx[bucket].slot = slot | ((EMH__SZ)key_hash & ~m->_mask);
     m->_num_filled = slot + 1;
@@ -793,16 +770,6 @@ EMH_HOT void EMH__FN(__erase_slot)(EMH__T* m, EMH__SZ sbucket, EMH__SZ main_buck
     const EMH__SZ slot      = m->_index[sbucket].slot & m->_mask;
     const EMH__SZ ebucket   = EMH__FN(__erase_bucket)(m, sbucket, main_bucket);
     const EMH__SZ last_slot = --m->_num_filled;
-#ifdef EMH_FAST_ERASE
-    /* When __erase_bucket handles a main-bucket erase (sbucket != ebucket), it
-     * copies the chain-follower's idx entry from ebucket into sbucket, then
-     * marks ebucket for freeing. The chain-follower's rev_bucket still points
-     * to ebucket (now freed). Fix it here before any further rev_bucket reads. */
-    if (sbucket != ebucket) {
-        const EMH__SZ cslot = m->_index[sbucket].slot & m->_mask;
-        m->_rev_bucket[cslot] = sbucket;
-    }
-#endif
 
     /* Destroy old contents of the slot being erased. For owned types
      * (strdup'd keys etc.) this releases the memory. For POD the macros
@@ -811,25 +778,13 @@ EMH_HOT void EMH__FN(__erase_slot)(EMH__T* m, EMH__SZ sbucket, EMH__SZ main_buck
     EMH_VAL_DESTROY(m->_pairs[slot].second);
 
     if (EMH_LIKELY(slot != last_slot)) {
-#ifdef EMH_FAST_ERASE
-        const EMH__SZ last_bucket = m->_rev_bucket[last_slot];
-#else
         const EMH__SZ last_bucket = (m->_etail == EMH__INACTIVE || ebucket == m->_etail)
             ? EMH__FN(__slot_to_bucket)(m, last_slot)
             : m->_etail;
-#endif
         /* Move-by-memcpy: bytes from last_slot transfer to slot, ownership
          * follows. last_slot's bytes are stale but unused (num_filled decr). */
         m->_pairs[slot] = m->_pairs[last_slot];
-        /* When erasing a main-bucket entry, __erase_bucket copies the
-         * chain-follower into sbucket and returns its old bucket as ebucket.
-         * If the chain-follower happened to be the last pair (last_bucket ==
-         * ebucket before the rev_bucket fix above), last_bucket now equals
-         * sbucket (fixed). Either way the normal update path is correct. */
         m->_index[last_bucket].slot = slot | (m->_index[last_bucket].slot & ~m->_mask);
-#ifdef EMH_FAST_ERASE
-        m->_rev_bucket[slot] = last_bucket;
-#endif
     }
 
     m->_etail = EMH__INACTIVE;
@@ -839,7 +794,7 @@ EMH_HOT void EMH__FN(__erase_slot)(EMH__T* m, EMH__SZ sbucket, EMH__SZ main_buck
 }
 
 /* ---- rebuild & rehash ---------------------------------------------- */
-/* Reallocate _pairs / _index (and _rev) to fit num_buckets. Pairs are
+/* Reallocate _pairs / _index to fit num_buckets. Pairs are
  * memcpy'd; index is reset to INACTIVE. Caller rebuilds index entries. */
 static inline void EMH__FN(__rebuild)(EMH__T* m, EMH__SZ num_buckets, EMH__SZ required_buckets)
 {
@@ -852,14 +807,6 @@ static inline void EMH__FN(__rebuild)(EMH__T* m, EMH__SZ num_buckets, EMH__SZ re
     if (m->_pairs && m->_num_filled)
         memcpy(new_pairs, m->_pairs, (size_t)m->_num_filled * sizeof(EMH__TP));
     EMH__FN(__dealloc_pairs)(m->_pairs);
-
-#ifdef EMH_FAST_ERASE
-    {
-        EMH__SZ* new_rev = EMH__FN(__alloc_rev)(need_size);
-        EMH__FN(__dealloc_rev)(m->_rev_bucket);
-        m->_rev_bucket = new_rev;
-    }
-#endif
 
     m->_pairs = new_pairs;
     m->_pairs_capacity = need_size;
@@ -897,9 +844,6 @@ static inline void EMH__FN(_rehash)(EMH__T* m, uint64_t required_buckets)
         m->_index[bucket].next = bucket;
         m->_index[bucket].slot = slot | ((EMH__SZ)key_hash & ~m->_mask);
         m->_ctrl[bucket] = EMH_CTRL_FULL;
-#ifdef EMH_FAST_ERASE
-        m->_rev_bucket[slot] = bucket;
-#endif
     }
 }
 
@@ -925,9 +869,6 @@ static inline void EMH__FN(_init_mlf)(EMH__T* m, size_t bucket, float mlf)
     m->_pairs = NULL;
     m->_index = NULL;
     m->_ctrl  = NULL;
-#ifdef EMH_FAST_ERASE
-    m->_rev_bucket = NULL;
-#endif
     m->_mask = 0;
     m->_num_buckets = 0;
     m->_num_filled = 0;
@@ -967,10 +908,6 @@ static inline void EMH__FN(_deinit)(EMH__T* m)
     EMH__FN(__dealloc_pairs)(m->_pairs);
     EMH__FN(__dealloc_index)(m->_index);
     EMH__FN(__dealloc_ctrl)(m->_ctrl);
-#ifdef EMH_FAST_ERASE
-    EMH__FN(__dealloc_rev)(m->_rev_bucket);
-    m->_rev_bucket = NULL;
-#endif
     m->_pairs = NULL;
     m->_index = NULL;
     m->_ctrl  = NULL;
@@ -1137,9 +1074,6 @@ static inline void EMH__FN(_clone)(EMH__T* dst, const EMH__T* src)
     EMH__FN(__dealloc_pairs)(dst->_pairs);
     EMH__FN(__dealloc_index)(dst->_index);
     EMH__FN(__dealloc_ctrl)(dst->_ctrl);
-#ifdef EMH_FAST_ERASE
-    EMH__FN(__dealloc_rev)(dst->_rev_bucket);
-#endif
 
     dst->_num_buckets    = src->_num_buckets;
     dst->_num_filled     = src->_num_filled;
@@ -1152,16 +1086,9 @@ static inline void EMH__FN(_clone)(EMH__T* dst, const EMH__T* src)
     dst->_pairs = EMH__FN(__alloc_pairs)(src->_pairs_capacity);
     dst->_index = EMH__FN(__alloc_index)(src->_num_buckets);
     dst->_ctrl  = EMH__FN(__alloc_ctrl)(src->_num_buckets);
-#ifdef EMH_FAST_ERASE
-    dst->_rev_bucket = EMH__FN(__alloc_rev)(src->_pairs_capacity);
-#endif
 
     memcpy(dst->_index, src->_index, ((size_t)src->_num_buckets + EMH_EAD) * sizeof(EMH__TI));
     memcpy(dst->_ctrl,  src->_ctrl,  (size_t)src->_num_buckets + EMH_GROUP_WIDTH);
-#ifdef EMH_FAST_ERASE
-    if (dst->_rev_bucket && src->_rev_bucket && src->_num_filled)
-        memcpy(dst->_rev_bucket, src->_rev_bucket, (size_t)src->_num_filled * sizeof(EMH__SZ));
-#endif
 
     for (EMH__SZ i = 0; i < src->_num_filled; ++i) {
         EMH_KEY_COPY(dst->_pairs[i].first,  src->_pairs[i].first);
