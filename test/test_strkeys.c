@@ -34,7 +34,12 @@ static void counted_free(char* s) {
 #define EMH_KEY_DESTROY(k)     counted_free((char*)(k))
 #include "hash_table8.h"
 
-#define ASSERT(x) do { if (!(x)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #x); return 1; } } while (0)
+#define ASSERT(x) do { \
+	if (!(x)) { \
+		fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #x); \
+		return 1; \
+	} \
+} while (0)
 
 static int erase_odd_val(char* k, uint32_t v, void* ctx) {
 	(void)k; (void)ctx;

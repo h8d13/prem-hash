@@ -15,11 +15,17 @@
 #include <string.h>
 
 static uint32_t lcg_state = 1;
-static uint32_t lcg(void) { lcg_state = lcg_state * 1664525u + 1013904223u; return lcg_state; }
+static uint32_t lcg(void) {
+	lcg_state = lcg_state * 1664525u + 1013904223u;
+	return lcg_state;
+}
 
 int main(int argc, char** argv)
 {
-	if (argc < 4) { fprintf(stderr, "usage: %s out n_ops key_space [seed]\n", argv[0]); return 2; }
+	if (argc < 4) {
+		fprintf(stderr, "usage: %s out n_ops key_space [seed]\n", argv[0]);
+		return 2;
+	}
 	const char* path = argv[1];
 	long n_ops = strtol(argv[2], NULL, 10);
 	uint32_t ks = (uint32_t)strtoul(argv[3], NULL, 10);

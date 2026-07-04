@@ -61,22 +61,42 @@ int main(int argc, char** argv)
 		}
 		for (uint32_t k = 0; k < WARMUP_N; ++k) {
 			uint32_t got;
-			if (!imap_get(&m, k, &got)) { fprintf(stderr, "FAIL warmup: miss on k=%u\n", k); return 1; }
-			if (got != k * 2)            { fprintf(stderr, "FAIL warmup: wrong value k=%u\n", k); return 1; }
+			if (!imap_get(&m, k, &got)) {
+				fprintf(stderr, "FAIL warmup: miss on k=%u\n", k);
+				return 1;
+			}
+			if (got != k * 2) {
+				fprintf(stderr, "FAIL warmup: wrong value k=%u\n", k);
+				return 1;
+			}
 		}
 		for (uint32_t k = 0; k < WARMUP_N; k += 2) {
-			if (imap_erase(&m, k) != 1)  { fprintf(stderr, "FAIL warmup: erase k=%u\n", k); return 1; }
+			if (imap_erase(&m, k) != 1) {
+				fprintf(stderr, "FAIL warmup: erase k=%u\n", k);
+				return 1;
+			}
 			ref_live[k] = 0; ref_count--;
 		}
 		for (uint32_t k = 1; k < WARMUP_N; k += 2) {
 			uint32_t got;
-			if (!imap_get(&m, k, &got))  { fprintf(stderr, "FAIL warmup: post-erase get on k=%u missed\n", k); return 1; }
+			if (!imap_get(&m, k, &got)) {
+				fprintf(stderr,
+					"FAIL warmup: post-erase get on k=%u missed\n", k);
+				return 1;
+			}
 		}
 		for (uint32_t k = 0; k < WARMUP_N; k += 2) {
 			uint32_t got;
-			if (imap_get(&m, k, &got))   { fprintf(stderr, "FAIL warmup: erased k=%u still present\n", k); return 1; }
+			if (imap_get(&m, k, &got)) {
+				fprintf(stderr,
+					"FAIL warmup: erased k=%u still present\n", k);
+				return 1;
+			}
 		}
-		if (imap_size(&m) != ref_count) { fprintf(stderr, "FAIL warmup: size mismatch\n"); return 1; }
+		if (imap_size(&m) != ref_count) {
+			fprintf(stderr, "FAIL warmup: size mismatch\n");
+			return 1;
+		}
 	}
 
 	long op_index = 0;
@@ -155,7 +175,8 @@ int main(int argc, char** argv)
 			for (size_t i = 0; i < imap_size(&m); ++i) {
 				const imap_pair_t* p = &imap_values(&m)[i];
 				if (!ref_live[p->first]) return FAIL("pair scan: imap has unlive key", op_index);
-				if (ref_val[p->first] != p->second) return FAIL("pair scan: value mismatch", op_index);
+				if (ref_val[p->first] != p->second)
+					return FAIL("pair scan: value mismatch", op_index);
 				live++;
 			}
 			if (live != ref_count) return FAIL("pair scan: size mismatch", op_index);
@@ -196,9 +217,11 @@ int main(int argc, char** argv)
 		miss_sweep_checked++;
 	}
 
-	printf("OK: replay  ops=%ld  set=%ld erase=%ld get=%ld(hit=%ld miss=%ld)  ckpts=%ld  final_size=%zu  miss_sweep=%ld/%ld\n",
-		   op_index, n_set, n_erase, n_get, n_get_hit, n_get_miss, n_checkpoint, imap_size(&m),
-		   miss_sweep_correct, miss_sweep_checked);
+	printf("OK: replay  ops=%ld  set=%ld erase=%ld get=%ld(hit=%ld miss=%ld)"
+		"  ckpts=%ld  final_size=%zu  miss_sweep=%ld/%ld\n",
+		op_index, n_set, n_erase, n_get, n_get_hit, n_get_miss,
+		n_checkpoint, imap_size(&m),
+		miss_sweep_correct, miss_sweep_checked);
 
 	imap_deinit(&m);
 	fclose(f);

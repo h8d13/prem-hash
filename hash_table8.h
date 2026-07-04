@@ -50,24 +50,24 @@
 #if defined(__AVX2__)
 #  include <immintrin.h>
 #  define EMH_GROUP_WIDTH 32u
-   static inline uint32_t emh_ctrl_mask_empty(const uint8_t* p) {
-	   /* movemask extracts bit 7 of each byte. Empty = 0x80, so bit 7 = 1. */
-	   return (uint32_t)_mm256_movemask_epi8(_mm256_loadu_si256((const __m256i*)p));
-   }
+static inline uint32_t emh_ctrl_mask_empty(const uint8_t* p) {
+	/* movemask extracts bit 7 of each byte. Empty = 0x80, so bit 7 = 1. */
+	return (uint32_t)_mm256_movemask_epi8(_mm256_loadu_si256((const __m256i*)p));
+}
 #elif defined(__SSE2__)
 #  include <emmintrin.h>
 #  define EMH_GROUP_WIDTH 16u
-   static inline uint32_t emh_ctrl_mask_empty(const uint8_t* p) {
-	   return (uint32_t)_mm_movemask_epi8(_mm_loadu_si128((const __m128i*)p));
-   }
+static inline uint32_t emh_ctrl_mask_empty(const uint8_t* p) {
+	return (uint32_t)_mm_movemask_epi8(_mm_loadu_si128((const __m128i*)p));
+}
 #else
 #  define EMH_GROUP_WIDTH 8u
-   static inline uint32_t emh_ctrl_mask_empty(const uint8_t* p) {
-	   uint64_t v; memcpy(&v, p, 8);
-	   uint64_t m = v & UINT64_C(0x8080808080808080);
-	   /* Gather bit 7 of each byte into the low 8 bits of result. */
-	   return (uint32_t)((m * UINT64_C(0x0002040810204081)) >> 56);
-   }
+static inline uint32_t emh_ctrl_mask_empty(const uint8_t* p) {
+	uint64_t v; memcpy(&v, p, 8);
+	uint64_t m = v & UINT64_C(0x8080808080808080);
+	/* Gather bit 7 of each byte into the low 8 bits of result. */
+	return (uint32_t)((m * UINT64_C(0x0002040810204081)) >> 56);
+}
 #endif
 #define EMH_CTRL_EMPTY ((uint8_t)0x80)
 /* 2-bit encoding for occupancy + is_main: bit 7 = empty when set;
@@ -157,9 +157,13 @@ static inline uint64_t emh_hash_u64(uint64_t key)
 }
 #endif
 static inline uint64_t emh_hash_u32(uint32_t k) { return emh_hash_u64((uint64_t)k); }
-static inline uint64_t emh_hash_i32(int32_t  k) { return emh_hash_u64((uint64_t)(uint32_t)k); }
+static inline uint64_t emh_hash_i32(int32_t  k) {
+	return emh_hash_u64((uint64_t)(uint32_t)k);
+}
 static inline uint64_t emh_hash_i64(int64_t  k) { return emh_hash_u64((uint64_t)k); }
-static inline uint64_t emh_hash_ptr(const void* p) { return emh_hash_u64((uint64_t)(uintptr_t)p); }
+static inline uint64_t emh_hash_ptr(const void* p) {
+	return emh_hash_u64((uint64_t)(uintptr_t)p);
+}
 
 /* wyhash, faithful port of emhash8::HashMap::wyhashstr */
 static inline uint64_t emh_wymix(uint64_t A, uint64_t B)
@@ -178,8 +182,12 @@ static inline uint64_t emh_wymix(uint64_t A, uint64_t B)
 #endif
 	return A ^ B;
 }
-static inline uint64_t emh__wyr8(const uint8_t* p) { uint64_t v; memcpy(&v, p, 8); return v; }
-static inline uint64_t emh__wyr4(const uint8_t* p) { uint32_t v; memcpy(&v, p, 4); return v; }
+static inline uint64_t emh__wyr8(const uint8_t* p) {
+	uint64_t v; memcpy(&v, p, 8); return v;
+}
+static inline uint64_t emh__wyr4(const uint8_t* p) {
+	uint32_t v; memcpy(&v, p, 4); return v;
+}
 static inline uint64_t emh__wyr3(const uint8_t* p, size_t k) {
 	return (((uint64_t)p[0]) << 16) | (((uint64_t)p[k >> 1]) << 8) | p[k - 1];
 }
@@ -255,7 +263,8 @@ static inline uint64_t emh_hash_str(const char* key, size_t len)
  * struct is forgotten). Pre-`_reserve` to skip rehash if your owned-type
  * is not memcpy-move-safe.                                              */
 #if !defined(EMH_POD_KV) && !defined(EMH_KEY_COPY)
-#  error "Define EMH_POD_KV for trivially-copyable K/V, or EMH_KEY_COPY/EMH_KEY_DESTROY for owned types. See hash_table8.h comment for details."
+#  error "Define EMH_POD_KV for trivially-copyable K/V, or EMH_KEY_COPY/ \
+EMH_KEY_DESTROY for owned types. See hash_table8.h comment for details."
 #endif
 #ifndef EMH_KEY_COPY
 #  define EMH_KEY_COPY(dst, src) ((dst) = (src))
@@ -336,9 +345,15 @@ static inline uint8_t* EMH__FN(__alloc_ctrl)(EMH__SZ num_buckets)
 static inline void EMH__FN(__dealloc_ctrl)(uint8_t* p) { if (p) EMH_FREE(p); }
 
 /* ---- small accessors ------------------------------------------------ */
-static inline size_t EMH__FN(_size)         (const EMH__T* m) { return (size_t)m->_num_filled; }
-static inline int    EMH__FN(_empty)        (const EMH__T* m) { return m->_num_filled == 0; }
-static inline size_t EMH__FN(_bucket_count) (const EMH__T* m) { return (size_t)m->_num_buckets; }
+static inline size_t EMH__FN(_size)         (const EMH__T* m) {
+	return (size_t)m->_num_filled;
+}
+static inline int    EMH__FN(_empty)        (const EMH__T* m) {
+	return m->_num_filled == 0;
+}
+static inline size_t EMH__FN(_bucket_count) (const EMH__T* m) {
+	return (size_t)m->_num_buckets;
+}
 static inline float  EMH__FN(_load_factor)  (const EMH__T* m) {
 	return (float)m->_num_filled / ((float)m->_mask + 1.0f);
 }
@@ -451,7 +466,9 @@ EMH_HOT EMH__SZ EMH__FN(__find_last_bucket)(const EMH__T* m, EMH__SZ main_bucket
 	}
 }
 
-EMH_HOT EMH__SZ EMH__FN(__find_prev_bucket)(const EMH__T* m, EMH__SZ main_bucket, EMH__SZ bucket)
+EMH_HOT EMH__SZ EMH__FN(__find_prev_bucket)(const EMH__T* m,
+		EMH__SZ main_bucket,
+		EMH__SZ bucket)
 {
 	EMH__SZ next_bucket = m->_index[main_bucket].next;
 	if (next_bucket == bucket) return main_bucket;
@@ -464,7 +481,9 @@ EMH_HOT EMH__SZ EMH__FN(__find_prev_bucket)(const EMH__T* m, EMH__SZ main_bucket
 
 /* Find which bucket points at this slot. Returns the bucket; writes
  * the main bucket out-param. Walks the chain. O(chain). */
-static inline EMH__SZ EMH__FN(__find_slot_bucket)(const EMH__T* m, EMH__SZ slot, EMH__SZ* main_out)
+static inline EMH__SZ EMH__FN(__find_slot_bucket)(const EMH__T* m,
+		EMH__SZ slot,
+		EMH__SZ* main_out)
 {
 	const uint64_t key_hash = EMH__FN(__hash_key)(m->_pairs[slot].first);
 	const EMH__SZ bucket = (EMH__SZ)key_hash & m->_mask;
@@ -490,7 +509,9 @@ static inline EMH__SZ EMH__FN(__slot_to_bucket)(const EMH__T* m, EMH__SZ slot)
 
 /* ---- lookup --------------------------------------------------------- */
 /* Returns bucket index containing key, or EMH__INACTIVE. */
-EMH_HOT EMH__SZ EMH__FN(__find_filled_bucket)(const EMH__T* m, EMH_KEY key, uint64_t key_hash)
+EMH_HOT EMH__SZ EMH__FN(__find_filled_bucket)(const EMH__T* m,
+		EMH_KEY key,
+		uint64_t key_hash)
 {
 	const EMH__TI* EMH__RESTRICT idx   = m->_index;
 	const EMH__TP* EMH__RESTRICT pairs = m->_pairs;
@@ -531,7 +552,9 @@ EMH_HOT EMH__SZ EMH__FN(__find_filled_bucket)(const EMH__T* m, EMH_KEY key, uint
  * Returning the pair pointer directly avoids a second m->_pairs dereference
  * in the caller (the compiler cannot keep m->_pairs in a register across the
  * function boundary without this). */
-EMH_HOT const EMH__TP* EMH__FN(__find_pair_h)(const EMH__T* m, EMH_KEY key, uint64_t key_hash)
+EMH_HOT const EMH__TP* EMH__FN(__find_pair_h)(const EMH__T* m,
+		EMH_KEY key,
+		uint64_t key_hash)
 {
 	const EMH__TI* EMH__RESTRICT idx = m->_index;
 	const EMH__SZ mask    = m->_mask;
@@ -614,7 +637,7 @@ EMH_HOT EMH__SZ EMH__FN(__kickout_bucket)(EMH__T* m, EMH__SZ bucket)
 {
 	EMH__TI* EMH__RESTRICT idx = m->_index;
 	const EMH__SZ occ_slot = idx[bucket].slot & m->_mask;
-	const EMH__SZ kmain    = (EMH__SZ)EMH__FN(__hash_key)(m->_pairs[occ_slot].first) & m->_mask;
+	const EMH__SZ kmain    = EMH__FN(__hash_bucket)(m, m->_pairs[occ_slot].first);
 	const EMH__SZ next_bucket = idx[bucket].next;
 	const EMH__SZ new_bucket  = EMH__FN(__find_empty_bucket)(m, next_bucket);
 	const EMH__SZ prev_bucket = EMH__FN(__find_prev_bucket)(m, kmain, bucket);
@@ -700,8 +723,11 @@ EMH_HOT EMH__SZ EMH__FN(__find_unique_bucket)(EMH__T* m, uint64_t key_hash)
 }
 
 /* ---- emit a new entry at bucket, at slot=_num_filled++ -------------- */
-EMH_HOT void EMH__FN(__emit)(EMH__T* m, EMH_KEY key, EMH_VAL val,
-								   EMH__SZ bucket, uint64_t key_hash)
+EMH_HOT void EMH__FN(__emit)(EMH__T* m,
+		EMH_KEY key,
+		EMH_VAL val,
+		EMH__SZ bucket,
+		uint64_t key_hash)
 {
 	EMH__TI* EMH__RESTRICT idx   = m->_index;
 	EMH__TP* EMH__RESTRICT pairs = m->_pairs;
@@ -773,7 +799,9 @@ EMH_HOT void EMH__FN(__erase_slot)(EMH__T* m, EMH__SZ sbucket, EMH__SZ main_buck
 /* ---- rebuild & rehash ---------------------------------------------- */
 /* Reallocate _pairs / _index to fit num_buckets. Pairs are
  * memcpy'd; index is reset to INACTIVE. Caller rebuilds index entries. */
-static inline void EMH__FN(__rebuild)(EMH__T* m, EMH__SZ num_buckets, EMH__SZ required_buckets)
+static inline void EMH__FN(__rebuild)(EMH__T* m,
+		EMH__SZ num_buckets,
+		EMH__SZ required_buckets)
 {
 	EMH__FN(__dealloc_index)(m->_index);
 
@@ -1041,8 +1069,10 @@ static inline void EMH__FN(_prefetch)(const EMH__T* m, EMH_KEY key)
  * even when EMH_KEY is a pointer type like `char*`.
  * Uses __find_slot_h: takes pre-computed hash (shared with prefetch),
  * returns slot directly (no second _index[bucket].slot reload after call). */
-static inline void EMH__FN(_find_batch)(const EMH__T* m, EMH_KEY const* keys, size_t n,
-										const EMH__TP* EMH__RESTRICT * EMH__RESTRICT out)
+static inline void EMH__FN(_find_batch)(const EMH__T* m,
+		EMH_KEY const* keys,
+		size_t n,
+		const EMH__TP* EMH__RESTRICT * EMH__RESTRICT out)
 {
 	enum { STRIDE = 40 };
 	const EMH__TI* EMH__RESTRICT idx = m->_index;
@@ -1083,7 +1113,8 @@ static inline void EMH__FN(_clone)(EMH__T* dst, const EMH__T* src)
 	dst->_index = EMH__FN(__alloc_index)(src->_num_buckets);
 	dst->_ctrl  = EMH__FN(__alloc_ctrl)(src->_num_buckets);
 
-	memcpy(dst->_index, src->_index, ((size_t)src->_num_buckets + EMH_EAD) * sizeof(EMH__TI));
+	memcpy(dst->_index, src->_index,
+		((size_t)src->_num_buckets + EMH_EAD) * sizeof(EMH__TI));
 	memcpy(dst->_ctrl,  src->_ctrl,  (size_t)src->_num_buckets + EMH_GROUP_WIDTH);
 
 	for (EMH__SZ i = 0; i < src->_num_filled; ++i) {

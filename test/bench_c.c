@@ -95,11 +95,13 @@ int main(int argc, char** argv)
 
 	printf("[C  port] N=%zu  sink=%lu\n", N, (unsigned long)sink);
 	printf("  insert:        %7.2f ns/op  (%.2f Mops/s)\n", (t1-t0)/N, 1000.0/((t1-t0)/N));
-	printf("  insert-fitted: %7.2f ns/op  (%.2f Mops/s)\n", (tF1-tF0)/N, 1000.0/((tF1-tF0)/N));
+	printf("  insert-fitted: %7.2f ns/op  (%.2f Mops/s)\n",
+		(tF1-tF0)/N, 1000.0/((tF1-tF0)/N));
 	printf("  lookup-hit:    %7.2f ns/op  (%.2f Mops/s)\n", (t3-t2)/N, 1000.0/((t3-t2)/N));
 	printf("  lookup-miss:   %7.2f ns/op  (%.2f Mops/s)\n", (t5-t4)/N, 1000.0/((t5-t4)/N));
 	printf("  find_batch:    %7.2f ns/op  (%.2f Mops/s)\n", (t7-t6)/N, 1000.0/((t7-t6)/N));
-	printf("  erase-half:    %7.2f ns/op  (%.2f Mops/s)\n", (t9-t8)/(N/2), 1000.0/((t9-t8)/(N/2)));
+	printf("  erase-half:    %7.2f ns/op  (%.2f Mops/s)\n",
+		(t9-t8)/(N/2), 1000.0/((t9-t8)/(N/2)));
 
 	free(out); free(keys); free(miss);
 	imap_deinit(&m);
