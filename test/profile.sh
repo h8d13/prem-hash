@@ -5,21 +5,21 @@ N=${1:-5m}
 BIN=./bench_c
 
 if ! command -v perf &>/dev/null; then
-    echo "error: perf not found" >&2
-    exit 1
+	echo "error: perf not found" >&2
+	exit 1
 fi
 if [ ! -x "$BIN" ]; then
-    echo "error: $BIN not found. Run: make" >&2
-    exit 1
+	echo "error: $BIN not found. Run: make" >&2
+	exit 1
 fi
 
 # Parse N suffix so bench_c gets a raw integer.
 parse_n() {
-    local s="${1,,}"
-    if [[ "$s" == *m ]]; then echo $(( ${s%m} * 1000000 ))
-    elif [[ "$s" == *k ]]; then echo $(( ${s%k} * 1000 ))
-    else echo "$s"
-    fi
+	local s="${1,,}"
+	if [[ "$s" == *m ]]; then echo $(( ${s%m} * 1000000 ))
+	elif [[ "$s" == *k ]]; then echo $(( ${s%k} * 1000 ))
+	else echo "$s"
+	fi
 }
 N_RAW=$(parse_n "$N")
 
