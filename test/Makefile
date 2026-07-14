@@ -7,10 +7,13 @@ HEADER  = ../hash_table8.h
 
 all: bench_c test_strkeys test_lazy_ctrl test_oom test_oom_ndebug test_replay op_gen
 
-examples: examples/wordcount
+examples: examples/wordcount examples/dedup
 
 examples/wordcount: examples/wordcount.c $(HEADER)
 	$(CC) $(CFLAGS) $< -o $@
+
+examples/dedup: examples/dedup.c $(HEADER)
+	$(CC) $(CFLAGS) -march=native $< -o $@
 
 bench_c: bench_c.c $(HEADER)
 	$(CC) $(CFLAGS) -march=native $< -o $@
