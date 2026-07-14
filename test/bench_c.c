@@ -57,6 +57,21 @@ int main(int argc, char** argv)
 	for (size_t i = 0; i < N; ++i) imap_set(&m2, keys[i], (uint32_t)i);
 	double tF1 = now_ns();
 
+	/* insert-batch: identical setup to insert-fitted, via _set_batch
+	 * (stride-prefetched). vals reuses keys; only value payload differs.  */
+	uint32_t* vals = (uint32_t*)malloc(N * sizeof(uint32_t));
+	for (size_t i = 0; i < N; ++i) vals[i] = (uint32_t)i;
+	imap m3; imap_init(&m3, 16);
+	imap_reserve(&m3, (uint64_t)((double)N / 0.79), 0);
+	double tB0 = now_ns();
+	size_t batch_ins = imap_set_batch(&m3, keys, vals, N);
+	double tB1 = now_ns();
+	if (batch_ins != N || imap_size(&m3) != N) {
+		fprintf(stderr, "insert-batch mismatch: inserted=%zu size=%zu N=%zu\n",
+			batch_ins, imap_size(&m3), N);
+		return 1;
+	}
+
 	/* hit: serial _get with stride prefetch of the future key.
 	 * Recommended pattern for any loop over a known key array. */
 	enum { PF_STRIDE = 40 };
@@ -97,14 +112,17 @@ int main(int argc, char** argv)
 	printf("  insert:        %7.2f ns/op  (%.2f Mops/s)\n", (t1-t0)/N, 1000.0/((t1-t0)/N));
 	printf("  insert-fitted: %7.2f ns/op  (%.2f Mops/s)\n",
 		(tF1-tF0)/N, 1000.0/((tF1-tF0)/N));
+	printf("  insert-batch:  %7.2f ns/op  (%.2f Mops/s)\n",
+		(tB1-tB0)/N, 1000.0/((tB1-tB0)/N));
 	printf("  lookup-hit:    %7.2f ns/op  (%.2f Mops/s)\n", (t3-t2)/N, 1000.0/((t3-t2)/N));
 	printf("  lookup-miss:   %7.2f ns/op  (%.2f Mops/s)\n", (t5-t4)/N, 1000.0/((t5-t4)/N));
 	printf("  find_batch:    %7.2f ns/op  (%.2f Mops/s)\n", (t7-t6)/N, 1000.0/((t7-t6)/N));
 	printf("  erase-half:    %7.2f ns/op  (%.2f Mops/s)\n",
 		(t9-t8)/(N/2), 1000.0/((t9-t8)/(N/2)));
 
-	free(out); free(keys); free(miss);
+	free(out); free(keys); free(miss); free(vals);
 	imap_deinit(&m);
 	imap_deinit(&m2);
+	imap_deinit(&m3);
 	return 0;
 }

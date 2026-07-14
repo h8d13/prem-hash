@@ -8,7 +8,7 @@ Single header, stb-style include-twice, MIT.
 ```
 hash_table8.h        header-only library, 1 TU
 test/
-  bench_c.c          insert / hit / miss / find_batch / erase-half harness
+  bench_c.c          insert / insert-batch / hit / miss / find_batch / erase-half harness
   bench.py           run a bench binary, T trials, print median ns/op + Mops/s
   test_strkeys.c     owned-key (strdup) lifecycle + leak balance
   test_lazy_ctrl.c   erase chain-rewiring regression + stress
@@ -155,6 +155,25 @@ serial loop matches or beats it for in-flight code.
 
 The standard bench measures the prefetched pattern under `lookup-hit:` / `lookup-miss:`
 columns. Naive serial `_get` would be ~50% slower at large N.
+
+## Bulk insert: `_set_batch`
+
+Same stride trick applied to the insert path: `_set_batch(m, keys, vals, n)`
+hashes the key 40 ahead and write-prefetches its `_index` cell (plus read-
+prefetch of the ctrl byte) before each `_set` lands. Semantics identical to
+a serial `_set` loop; returns count of new keys (overwrites not counted).
+A rehash mid-loop only stales already-issued hints.
+
+Measured on Raptor Lake i5-14600KF vs `insert-fitted` (both pre-sized,
+zero rehash), median of 10:
+
+| N   | insert-fitted | insert-batch | win    |
+|-----|---------------|--------------|--------|
+| 1M  | 12.70 ns      |  9.28 ns     | -27%   |
+| 5M  | 19.98 ns      | 13.56 ns     | -32%   |
+| 15M | 19.94 ns      | 14.84 ns     | -26%   |
+
+Tracked as the `ibatch` column in bench output / `results.csv`.
 
 ## is_main flag (ctrl byte bit 0)
 

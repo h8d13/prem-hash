@@ -25,10 +25,13 @@ History lives in git (commit results.csv) plus the log itself.
 import argparse, subprocess, statistics, sys, os, csv, datetime
 from collections import defaultdict
 
-COLS   = ["insert", "fitted", "hit", "miss", "batch", "erase"]
+COLS   = ["insert", "fitted", "ibatch", "hit", "miss", "batch", "erase"]
 LABELS = {"insert": "insert:", "fitted": "insert-fitted:",
+		  "ibatch": "insert-batch:",
 		  "hit": "lookup-hit:", "miss": "lookup-miss:",
 		  "batch": "find_batch:", "erase": "erase-half:"}
+# Cols older binaries / csv rows may lack; report nan instead of failing.
+OPT_COLS = {"ibatch"}
 LOG    = "results.csv"
 
 
@@ -56,6 +59,8 @@ def run_one(binary, n):
 		for col, lbl in LABELS.items():
 			if lbl in line:
 				row[col] = float(line.split()[1])
+	for c in OPT_COLS:
+		row.setdefault(c, float("nan"))
 	if len(row) != len(COLS):
 		sys.exit(f"error: unexpected output from {binary}")
 	return row
@@ -99,13 +104,30 @@ def print_degradation(binaries, labels, sizes, all_medians):
 		print(f"  {lbl:<14}{vals}")
 
 
+HDR = ["timestamp", "N", "trials", "variant"] + COLS
+
+
+def migrate_log():
+	"""Rewrite results.csv under the current header; missing cols -> empty."""
+	if not os.path.exists(LOG): return
+	with open(LOG) as f:
+		rows = list(csv.DictReader(f))
+	if rows and set(rows[0].keys()) == set(HDR): return
+	with open(LOG, "w", newline="") as f:
+		w = csv.DictWriter(f, fieldnames=HDR)
+		w.writeheader()
+		for r in rows:
+			w.writerow({k: r.get(k, "") for k in HDR})
+
+
 def append_log(binaries, labels, n, trials, medians):
+	migrate_log()
 	exists = os.path.exists(LOG)
 	ts = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 	with open(LOG, "a", newline="") as f:
 		w = csv.writer(f)
 		if not exists:
-			w.writerow(["timestamp", "N", "trials", "variant"] + COLS)
+			w.writerow(HDR)
 		for b, lbl in zip(binaries, labels):
 			m = medians[b]
 			w.writerow([ts, n, trials, lbl] + [f"{m[c]:.4f}" for c in COLS])
@@ -126,7 +148,8 @@ def cmd_list():
 		  "".join(f"{c:>9}" for c in COLS))
 	for r in rows:
 		print(f"{r['timestamp']:<22} {fmt_n(int(r['N'])):>8} {r['trials']:>6} "
-			  f"{r['variant']:<14}" + "".join(f"{float(r[c]):>9.2f}" for c in COLS))
+			  f"{r['variant']:<14}" +
+			  "".join(f"{float(r.get(c) or 'nan'):>9.2f}" for c in COLS))
 
 
 def cmd_compare(variant):
@@ -151,8 +174,8 @@ def cmd_compare(variant):
 		hdr = f"  {'metric':<14}" + "".join(f"{c:>9}" for c in COLS)
 		print(hdr)
 		print(f"  {'-' * (len(hdr) - 2)}")
-		p = {c: float(prev[c]) for c in COLS}
-		c_ = {c: float(curr[c]) for c in COLS}
+		p = {c: float(prev.get(c) or "nan") for c in COLS}
+		c_ = {c: float(curr.get(c) or "nan") for c in COLS}
 		print(f"  {'prev':<14}" + "".join(f"{p[c]:>9.2f}" for c in COLS))
 		print(f"  {'curr':<14}" + "".join(f"{c_[c]:>9.2f}" for c in COLS))
 		deltas = "".join(f"{((c_[c]/p[c])-1)*100:>+8.1f}%" for c in COLS)

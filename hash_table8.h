@@ -81,16 +81,20 @@ static inline uint32_t emh_ctrl_mask_empty(const uint8_t* p) {
 #  define EMH_LIKELY(c)   __builtin_expect(!!(c), 1)
 #  define EMH_UNLIKELY(c) __builtin_expect(!!(c), 0)
 #  define EMH_PREFETCH(p) __builtin_prefetch((const void*)(p))
+   /* rw=1: fetch line in exclusive state, skips the RFO on the write. */
+#  define EMH_PREFETCHW(p) __builtin_prefetch((const void*)(p), 1)
 #  define EMH_AINLINE     __attribute__((always_inline))
 #elif defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
 #  define EMH_LIKELY(c)   (c)
 #  define EMH_UNLIKELY(c) (c)
 #  define EMH_PREFETCH(p) _mm_prefetch((const char*)(p), _MM_HINT_T0)
+#  define EMH_PREFETCHW(p) _mm_prefetch((const char*)(p), _MM_HINT_T0)
 #  define EMH_AINLINE     __forceinline
 #else
 #  define EMH_LIKELY(c)   (c)
 #  define EMH_UNLIKELY(c) (c)
 #  define EMH_PREFETCH(p) ((void)0)
+#  define EMH_PREFETCHW(p) ((void)0)
 #  define EMH_AINLINE
 #endif
 /* Force-inline on hot paths. gcc -O3 already inlines most, but the
@@ -1085,6 +1089,31 @@ static inline void EMH__FN(_find_batch)(const EMH__T* m,
 		const uint64_t h = EMH__FN(__hash_key)(keys[i]);
 		out[i] = EMH__FN(__find_pair_h)(m, keys[i], h);
 	}
+}
+
+/* Batched insert-or-assign, _set semantics per key. Stride-prefetches the
+ * target index cell and ctrl byte so the _index[bucket] miss overlaps with
+ * the ~STRIDE inserts in between, mirroring _find_batch. Write-prefetch on
+ * _index: the cell is written on every new-key insert. A rehash mid-loop
+ * only stales already-issued hints (mask/arrays re-read per iteration).
+ * Returns count of new keys inserted (overwrites not counted).           */
+static inline size_t EMH__FN(_set_batch)(EMH__T* m,
+		EMH_KEY const* keys,
+		EMH_VAL const* vals,
+		size_t n)
+{
+	enum { STRIDE = 40 };
+	size_t inserted = 0;
+	for (size_t i = 0; i < n; ++i) {
+		if (i + STRIDE < n) {
+			const EMH__SZ b =
+				(EMH__SZ)EMH__FN(__hash_key)(keys[i + STRIDE]) & m->_mask;
+			EMH_PREFETCHW(&m->_index[b]);
+			EMH_PREFETCH(&m->_ctrl[b]);
+		}
+		inserted += (size_t)EMH__FN(_set)(m, keys[i], vals[i]);
+	}
+	return inserted;
 }
 
 /* ---- copy (deep) ---------------------------------------------------- */

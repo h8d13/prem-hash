@@ -7,6 +7,7 @@ test/test_oom_ndebug
 test/test_replay
 test/test_strkeys
 test/examples/wordcount
+test/examples/dedup
 
 # Sanitizer / snapshot variants
 test/*.san
