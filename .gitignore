@@ -1,5 +1,6 @@
 # Build outputs from test/Makefile
 test/bench_c
+test/bench_str
 test/op_gen
 test/test_lazy_ctrl
 test/test_oom

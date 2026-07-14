@@ -9,6 +9,7 @@ Single header, stb-style include-twice, MIT.
 hash_table8.h        header-only library, 1 TU
 test/
   bench_c.c          insert / insert-batch / hit / miss / find_batch / erase-half harness
+  bench_str.c        string-key (strdup) insert vs insert-batch, lookup-hit
   bench.py           run a bench binary, T trials, print median ns/op + Mops/s
   test_strkeys.c     owned-key (strdup) lifecycle + leak balance
   test_lazy_ctrl.c   erase chain-rewiring regression + stress
@@ -174,6 +175,21 @@ zero rehash), median of 10:
 | 15M | 19.94 ns      | 14.84 ns     | -26%   |
 
 Tracked as the `ibatch` column in bench output / `results.csv`.
+
+String keys win more, not less: the hash-ahead runs wyhash twice per key,
+but the hidden miss (index cell + strcmp target) dominates. `bench_str`
+(24-byte strdup keys, pre-sized, median of 5):
+
+| N   | insert-fitted | insert-batch | win    |
+|-----|---------------|--------------|--------|
+| 1M  | 56.9 ns       | 34.1 ns      | -40%   |
+| 5M  | 75.0 ns       | 43.0 ns      | -43%   |
+| 15M | 75.1 ns       | 42.1 ns      | -44%   |
+
+Refuted variant: additionally write-prefetching the `_pairs[_num_filled +
+STRIDE]` store target regresses ibatch 1-4%. The pairs store stream is
+sequential; the HW prefetcher already covers it, the extra hint only burns
+an issue slot.
 
 ## is_main flag (ctrl byte bit 0)
 

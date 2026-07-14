@@ -15,6 +15,9 @@ examples/wordcount: examples/wordcount.c $(HEADER)
 bench_c: bench_c.c $(HEADER)
 	$(CC) $(CFLAGS) -march=native $< -o $@
 
+bench_str: bench_str.c $(HEADER)
+	$(CC) $(CFLAGS) -march=native $< -o $@
+
 test_strkeys: test_strkeys.c $(HEADER)
 	$(CC) $(CFLAGS) $< -o $@
 
@@ -66,5 +69,5 @@ profile: bench_c.c $(HEADER)
 	$(CC) $(CFLAGS) -march=native -g -fno-omit-frame-pointer $< -o bench_c
 
 clean:
-	rm -f bench_c test_strkeys test_lazy_ctrl test_oom test_oom_ndebug test_replay op_gen *.san
+	rm -f bench_c bench_str test_strkeys test_lazy_ctrl test_oom test_oom_ndebug test_replay op_gen *.san
 	rm -f examples/wordcount
